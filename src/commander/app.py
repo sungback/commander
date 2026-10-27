@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 
 from . import ops
 from .panel import FilePanel
+from .viewer import ViewerDialog
 from .workers import Worker
 
 
@@ -32,6 +33,8 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Tab"), self, activated=self.switch_panel)
         QShortcut(QKeySequence("Ctrl+T"), self, activated=lambda: self.panels[self.active_index()].new_tab())
         QShortcut(QKeySequence("Ctrl+W"), self, activated=lambda: self.panels[self.active_index()].close_tab())
+        QShortcut(QKeySequence("F3"), self, activated=lambda: self.open_file(edit=False))
+        QShortcut(QKeySequence("F4"), self, activated=lambda: self.open_file(edit=True))
         QShortcut(QKeySequence("F5"), self, activated=lambda: self.transfer(move=False))
         QShortcut(QKeySequence("F6"), self, activated=lambda: self.transfer(move=True))
         QShortcut(QKeySequence("F7"), self, activated=self.make_dir)
@@ -92,6 +95,15 @@ class MainWindow(QMainWindow):
         worker.finished.connect(finished)
         self._worker = worker
         worker.start()
+
+    def open_file(self, edit: bool) -> None:
+        paths = [p for p in self.panels[self.active_index()].selected_paths() if p.is_file()]
+        if not paths:
+            return
+        try:
+            ViewerDialog(paths[0], edit, self).exec()
+        except (OSError, ValueError) as e:
+            self._error(e)
 
     def make_dir(self) -> None:
         panel = self.panels[self.active_index()]
