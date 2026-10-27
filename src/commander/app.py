@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 
 from . import archive, ops
 from .panel import FilePanel
+from .search_dialog import SearchDialog
 from .viewer import ViewerDialog
 from .workers import Worker
 
@@ -33,6 +34,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Tab"), self, activated=self.switch_panel)
         QShortcut(QKeySequence("Ctrl+T"), self, activated=lambda: self.panels[self.active_index()].new_tab())
         QShortcut(QKeySequence("Ctrl+W"), self, activated=lambda: self.panels[self.active_index()].close_tab())
+        QShortcut(QKeySequence("Ctrl+F"), self, activated=self.search)
         QShortcut(QKeySequence("F3"), self, activated=lambda: self.open_file(edit=False))
         QShortcut(QKeySequence("F4"), self, activated=lambda: self.open_file(edit=True))
         QShortcut(QKeySequence("F5"), self, activated=lambda: self.transfer(move=False))
@@ -108,6 +110,17 @@ class MainWindow(QMainWindow):
         worker.finished.connect(finished)
         self._worker = worker
         worker.start()
+
+    def search(self) -> None:
+        panel = self.panels[self.active_index()]
+        pattern, ok = QInputDialog.getText(self, "Search", "Name (glob like *.txt, or text):")
+        if not ok or not pattern.strip():
+            return
+        dlg = SearchDialog(Path(panel.current_path()), pattern, self)
+        dlg.exec()
+        if dlg.chosen is not None:
+            target = dlg.chosen if dlg.chosen.is_dir() else dlg.chosen.parent
+            panel.set_path(str(target))
 
     def open_file(self, edit: bool) -> None:
         paths = [p for p in self.panels[self.active_index()].selected_paths() if p.is_file()]

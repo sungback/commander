@@ -189,3 +189,25 @@ def test_browse_and_extract_archive(tmp_path, monkeypatch):
     QTest.keyClick(p.view, Qt.Key_Backspace)
     assert not p.in_archive and p.current_path() == str(a)
     _wait(lambda: "z.zip" in _names(p))
+
+
+def test_search_dialog_navigates(tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+
+    from commander.search_dialog import SearchDialog
+
+    _app, win, _a, b = _setup(tmp_path, monkeypatch)
+    win.active_index = lambda: 0
+    (b / "deep").mkdir()
+    (b / "deep" / "target.log").write_text("x")
+    win.panels[0].set_path(str(tmp_path))
+    monkeypatch.setattr(QInputDialog, "getText", lambda *_: ("target", True))
+
+    def fake_exec(self):
+        _wait(lambda: self.results.count() == 1 and self.worker.isFinished())
+        assert self.results.item(0).text() == str(b / "deep" / "target.log")
+        self._choose(self.results.item(0))
+
+    monkeypatch.setattr(SearchDialog, "exec", fake_exec)
+    win.search()
+    assert win.panels[0].current_path() == str(b / "deep")

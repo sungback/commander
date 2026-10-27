@@ -45,3 +45,22 @@ def test_error_is_reported(tmp_path):
     w.failed.connect(errors.append)
     _run(w)
     assert errors and "FileNotFoundError" in errors[0]
+
+
+def test_search_worker_streams_and_cancels(tmp_path):
+    from commander.workers import SearchWorker
+
+    for i in range(3):
+        (tmp_path / f"{i}.txt").write_text("x")
+    found = []
+    w = SearchWorker(tmp_path, "*.txt")
+    w.found.connect(found.append)
+    _run(w)
+    assert sorted(found) == [str(tmp_path / f"{i}.txt") for i in range(3)]
+    assert not w.truncated
+
+    found.clear()
+    w = SearchWorker(tmp_path, "*.txt")
+    w.found.connect(lambda p: (found.append(p), w.cancel()), type=Qt.DirectConnection)
+    _run(w)
+    assert len(found) == 1

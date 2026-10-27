@@ -4,6 +4,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
+from . import search
+
 Task = Callable[[Callable[[Path], None]], None]
 
 
@@ -37,3 +39,26 @@ class Worker(QThread):
             pass
         except (OSError, ValueError) as e:
             self.failed.emit(f"{type(e).__name__}: {e}")
+
+
+class SearchWorker(QThread):
+    found = Signal(str)
+
+    LIMIT = 5000
+
+    def __init__(self, root: Path, pattern: str, parent=None):
+        super().__init__(parent)
+        self._root = root
+        self._pattern = pattern
+        self._cancel = False
+        self.truncated = False
+
+    def cancel(self) -> None:
+        self._cancel = True
+
+    def run(self) -> None:
+        count = 0
+        for path in search.find(self._root, self._pattern, lambda: self._cancel, self.LIMIT):
+            self.found.emit(str(path))
+            count += 1
+        self.truncated = count >= self.LIMIT
