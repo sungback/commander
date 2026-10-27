@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from PySide6.QtCore import QDir, QModelIndex
+from PySide6.QtCore import QDir, QItemSelectionModel, QModelIndex, Qt
 from PySide6.QtWidgets import (
     QFileSystemModel,
     QLineEdit,
@@ -9,6 +9,30 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+
+class _View(QTreeView):
+    """Tree view with Total Commander style keys: Enter/Backspace/Space/Insert."""
+
+    def __init__(self, tab: "_Tab"):
+        super().__init__()
+        self._tab = tab
+
+    def keyPressEvent(self, e) -> None:
+        key = e.key()
+        cur = self.currentIndex()
+        if key in (Qt.Key_Return, Qt.Key_Enter) and cur.isValid():
+            self._tab._open(cur)
+        elif key == Qt.Key_Backspace:
+            self._tab.set_path(str(Path(self._tab.current_path()).parent))
+        elif key in (Qt.Key_Space, Qt.Key_Insert) and cur.isValid():
+            self.selectionModel().select(
+                cur, QItemSelectionModel.Toggle | QItemSelectionModel.Rows)
+            below = self.indexBelow(cur)
+            if below.isValid():
+                self.selectionModel().setCurrentIndex(below, QItemSelectionModel.NoUpdate)
+        else:
+            super().keyPressEvent(e)
 
 
 class _Tab(QWidget):
@@ -22,7 +46,7 @@ class _Tab(QWidget):
         self.path_changed = None  # callback(path), set by FilePanel
         self.path_bar.returnPressed.connect(lambda: self.set_path(self.path_bar.text()))
 
-        self.view = QTreeView()
+        self.view = _View(self)
         self.view.setModel(self.model)
         self.view.setRootIndex(self.model.index(path))
         self.view.setRootIsDecorated(False)

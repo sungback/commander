@@ -109,3 +109,37 @@ def test_tabs_are_independent(tmp_path):
     panel.close_tab(0)  # last tab is kept
     assert panel.tabs.count() == 1
     app.processEvents()
+
+
+def test_keyboard_navigation(tmp_path):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    app = QApplication.instance() or QApplication([])
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (tmp_path / "x.txt").write_text("x")
+    panel = MainWindow().panels[0]
+    panel.set_path(str(tmp_path))
+    _wait(lambda: "sub" in _names(panel))
+
+    def row(name):
+        root = panel.view.rootIndex()
+        return next(panel.model.index(r, 0, root) for r in range(panel.model.rowCount(root))
+                    if panel.model.fileName(panel.model.index(r, 0, root)) == name)
+
+    panel.view.setCurrentIndex(row("sub"))
+    QTest.keyClick(panel.view, Qt.Key_Return)
+    assert panel.current_path() == str(sub)
+    QTest.keyClick(panel.view, Qt.Key_Backspace)
+    assert panel.current_path() == str(tmp_path)
+
+    _wait(lambda: "x.txt" in _names(panel))
+    panel.view.setCurrentIndex(row("x.txt"))
+    panel.view.clearSelection()  # setCurrentIndex selects the row itself
+    QTest.keyClick(panel.view, Qt.Key_Space)
+    assert [p.name for p in panel.selected_paths()] == ["x.txt"]
+    panel.view.setCurrentIndex(row("x.txt"))
+    QTest.keyClick(panel.view, Qt.Key_Space)
+    assert panel.selected_paths() == []
+    app.processEvents()
