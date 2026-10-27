@@ -33,6 +33,10 @@ def _wait(cond, timeout_ms=3000):
     assert cond(), "timed out waiting for model"
 
 
+def _idle(win):
+    _wait(lambda: win._worker is None)
+
+
 def _setup(tmp_path, monkeypatch):
     from PySide6.QtWidgets import QInputDialog, QMessageBox
 
@@ -70,6 +74,7 @@ def test_f5_f6_f7_f8(tmp_path, monkeypatch):
     assert [p.name for p in win.panels[0].selected_paths()] == ["f.txt"]
 
     win.transfer(move=False)
+    _idle(win)
     assert (b / "f.txt").exists() and (a / "f.txt").exists()
 
     win.make_dir()
@@ -77,9 +82,11 @@ def test_f5_f6_f7_f8(tmp_path, monkeypatch):
     _wait(lambda: "newdir" in _names(win.panels[0]))
 
     win.transfer(move=True)  # f.txt exists in b -> overwrite prompt auto-yes
+    _idle(win)
     assert not (a / "f.txt").exists() and (b / "f.txt").exists()
 
     _wait(lambda: "f.txt" not in _names(win.panels[0]))
     win.panels[0].view.selectAll()
     win.delete()
+    _idle(win)
     assert list(a.iterdir()) == []

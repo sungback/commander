@@ -1,17 +1,20 @@
 import sys
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QInputDialog,
     QMainWindow,
     QMessageBox,
+    QProgressDialog,
     QSplitter,
 )
 
 from . import ops
 from .panel import FilePanel
+from .workers import Worker
 
 
 class MainWindow(QMainWindow):
@@ -19,6 +22,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Commander")
         self.resize(1100, 650)
+        self._worker: Worker | None = None
         home = str(Path.home())
         self.panels = [FilePanel(home), FilePanel(home)]
         splitter = QSplitter()
@@ -61,10 +65,31 @@ class MainWindow(QMainWindow):
             if not self._ask("Overwrite", f"Already exists:\n{names}\n\nOverwrite?"):
                 return
             overwrite = True
-        try:
-            (ops.move if move else ops.copy)(srcs, dst, overwrite=overwrite)
-        except (OSError, ValueError) as e:
-            self._error(e)
+        fn = ops.move if move else ops.copy
+        self._run_task(verb, len(srcs),
+                       lambda progress: fn(srcs, dst, overwrite=overwrite, progress=progress))
+
+    def _run_task(self, title: str, total: int, task) -> None:
+        if self._worker is not None:
+            return  # one background task at a time
+        dialog = QProgressDialog(title, "Cancel", 0, total, self)
+        dialog.setWindowTitle(title)
+        dialog.setWindowModality(Qt.WindowModal)
+        dialog.setMinimumDuration(500)
+        worker = Worker(task, self)
+        worker.progress.connect(lambda n, name: (dialog.setValue(n), dialog.setLabelText(name)))
+        worker.failed.connect(lambda msg: QMessageBox.critical(self, "Error", msg))
+        dialog.canceled.connect(worker.cancel)
+
+        def finished():
+            dialog.reset()
+            dialog.deleteLater()
+            worker.deleteLater()
+            self._worker = None
+
+        worker.finished.connect(finished)
+        self._worker = worker
+        worker.start()
 
     def make_dir(self) -> None:
         panel = self.panels[self.active_index()]
@@ -83,10 +108,7 @@ class MainWindow(QMainWindow):
             return
         if not self._ask("Delete", f"Permanently delete {len(paths)} item(s)?"):
             return
-        try:
-            ops.delete(paths)
-        except OSError as e:
-            self._error(e)
+        self._run_task("Delete", len(paths), lambda progress: ops.delete(paths, progress=progress))
 
 
 def main() -> int:
