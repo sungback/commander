@@ -1,3 +1,4 @@
+import posixpath
 from pathlib import Path
 
 from PySide6.QtCore import QDir, QItemSelectionModel, QModelIndex, Qt
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import archive
+from .remote import FtpClient
 
 
 class _View(QTreeView):
@@ -53,7 +55,10 @@ class _Tab(QWidget):
         self.archive: Path | None = None  # set while browsing inside an archive
         self.inner = ""
         self._entries: list[archive.Entry] = []
-        self.arch_model = QStandardItemModel(self)
+        self.arch_model = QStandardItemModel(self)  # also used for remote listings
+        self.remote: FtpClient | None = None  # set while browsing an FTP server
+        self.remote_path = "/"
+        self.local_dir = path  # last local folder, kept while browsing a remote
 
         self.view = _View(self)
         self.view.setModel(self.model)
@@ -74,6 +79,10 @@ class _Tab(QWidget):
     def in_archive(self) -> bool:
         return self.archive is not None
 
+    @property
+    def in_remote(self) -> bool:
+        return self.remote is not None
+
     def set_path(self, path: str) -> None:
         if archive.is_archive(Path(path)):
             try:
@@ -85,32 +94,50 @@ class _Tab(QWidget):
         if self.model.isDir(idx):
             self._leave_archive()
             self.view.setRootIndex(idx)
-            self.path_bar.setText(self.model.filePath(idx))
+            self.local_dir = self.model.filePath(idx)
+            self.path_bar.setText(self.local_dir)
             if self.path_changed:
                 self.path_changed(self.model.filePath(idx))
 
     def open_archive(self, path: Path, inner: str = "") -> None:
         if self.archive != path:
             self._entries = archive.read_entries(path)  # raises before any state changes
+            self._leave_archive()
             self.archive = path
         self.inner = inner
+        rows = [(e.path.rsplit("/", 1)[-1], e.is_dir, e.size)
+                for e in archive.children(self._entries, inner)]
+        self._show_rows(rows, f"{path}:/{inner}", str(path))
+
+    def open_remote(self, client: FtpClient, path: str = "/") -> None:
+        entries = client.listdir(path)  # raises before any state changes
+        if self.remote is not client:
+            self._leave_archive()
+            self.remote = client
+        self.remote_path = path
+        rows = [(e.name, e.is_dir, e.size) for e in entries]
+        self._show_rows(rows, f"ftp://{client.host}:{client.port}{path}", f"{client.host}{path}")
+
+    def _show_rows(self, rows: list[tuple[str, bool, int]], bar: str, title: str) -> None:
         m = self.arch_model
         m.clear()
         m.setHorizontalHeaderLabels(["Name", "Size"])
-        rows = [("..", True, 0)] + [(e.path.rsplit("/", 1)[-1], e.is_dir, e.size)
-                                    for e in archive.children(self._entries, inner)]
-        for name, is_dir, size in rows:
+        for name, is_dir, size in [("..", True, 0)] + rows:
             item = QStandardItem(name)
             item.setData(is_dir, Qt.UserRole)
             m.appendRow([item, QStandardItem("" if is_dir else str(size))])
         self.view.setSortingEnabled(False)  # entries are pre-sorted, ".." first
         self.view.setModel(m)
-        self.path_bar.setText(f"{path}:/{inner}")
+        self.path_bar.setText(bar)
         if self.path_changed:
-            self.path_changed(str(path))
+            self.path_changed(title)
 
     def _leave_archive(self) -> None:
-        if self.archive is None:
+        """Leave archive or remote browsing and return to the local file model."""
+        if self.remote is not None:
+            self.remote.close()
+            self.remote = None
+        if self.archive is None and self.view.model() is self.model:
             return
         self.archive = None
         self.view.setModel(self.model)
@@ -119,7 +146,10 @@ class _Tab(QWidget):
         self.view.setColumnWidth(0, 260)
 
     def go_up(self) -> None:
-        if self.archive is None:
+        if self.remote is not None:
+            if self.remote_path != "/":
+                self.open_remote(self.remote, posixpath.dirname(self.remote_path.rstrip("/")) or "/")
+        elif self.archive is None:
             self.set_path(str(Path(self.current_path()).parent))
         elif self.inner:
             self.open_archive(self.archive, self.inner.rpartition("/")[0])
@@ -127,13 +157,15 @@ class _Tab(QWidget):
             self.set_path(str(self.archive.parent))
 
     def current_path(self) -> str:
-        """Current folder; while inside an archive, the folder containing it."""
+        """Current folder; inside an archive its folder, while on a remote the last local folder."""
+        if self.remote is not None:
+            return self.local_dir
         if self.archive is not None:
             return str(self.archive.parent)
         return self.model.filePath(self.view.rootIndex())
 
     def selected_paths(self) -> list[Path]:
-        if self.archive is not None:
+        if self.archive is not None or self.remote is not None:
             return []
         rows = self.view.selectionModel().selectedRows(0)
         return [Path(self.model.filePath(i)) for i in rows if self.model.fileName(i) != ".."]
@@ -146,7 +178,24 @@ class _Tab(QWidget):
         items = (self.arch_model.itemFromIndex(i) for i in self.view.selectionModel().selectedRows(0))
         return [prefix + it.text() for it in items if it.text() != ".."]
 
+    def remote_selection(self) -> list[str]:
+        """Selected full remote paths (empty outside remote browsing)."""
+        if self.remote is None:
+            return []
+        items = (self.arch_model.itemFromIndex(i) for i in self.view.selectionModel().selectedRows(0))
+        return [posixpath.join(self.remote_path, it.text()) for it in items if it.text() != ".."]
+
     def _open(self, idx: QModelIndex) -> None:
+        if self.remote is not None:
+            item = self.arch_model.itemFromIndex(idx.siblingAtColumn(0))
+            try:
+                if item.text() == "..":
+                    self.go_up()
+                elif item.data(Qt.UserRole):
+                    self.open_remote(self.remote, posixpath.join(self.remote_path, item.text()))
+            except OSError as e:
+                QMessageBox.critical(self, "Error", f"{type(e).__name__}: {e}")
+            return
         if self.archive is not None:
             item = self.arch_model.itemFromIndex(idx.siblingAtColumn(0))
             if item.text() == "..":
@@ -200,7 +249,10 @@ class FilePanel(QWidget):
         if self.tabs.count() <= 1:
             return  # keep at least one tab
         index = self.tabs.currentIndex() if index is None else index
-        self.tabs.widget(index).deleteLater()
+        tab = self.tabs.widget(index)
+        if tab.remote is not None:
+            tab.remote.close()
+        tab.deleteLater()
         self.tabs.removeTab(index)
 
     def set_path(self, path: str) -> None:
@@ -216,6 +268,24 @@ class FilePanel(QWidget):
 
     def archive_selection(self) -> list[str]:
         return self._tab.archive_selection()
+
+    @property
+    def in_remote(self) -> bool:
+        return self._tab.in_remote
+
+    @property
+    def remote(self) -> FtpClient | None:
+        return self._tab.remote
+
+    @property
+    def remote_path(self) -> str:
+        return self._tab.remote_path
+
+    def remote_selection(self) -> list[str]:
+        return self._tab.remote_selection()
+
+    def connect_remote(self, client: FtpClient, path: str = "/") -> None:
+        self._tab.open_remote(client, path)
 
     def current_path(self) -> str:
         return self._tab.current_path()

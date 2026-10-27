@@ -1,11 +1,13 @@
 import sys
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QInputDialog,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QProgressDialog,
@@ -14,6 +16,7 @@ from PySide6.QtWidgets import (
 
 from . import archive, ops, rename
 from .panel import FilePanel
+from .remote import FtpClient
 from .search_dialog import SearchDialog
 from .viewer import ViewerDialog
 from .workers import Worker
@@ -35,6 +38,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+T"), self, activated=lambda: self.panels[self.active_index()].new_tab())
         QShortcut(QKeySequence("Ctrl+W"), self, activated=lambda: self.panels[self.active_index()].close_tab())
         QShortcut(QKeySequence("Ctrl+F"), self, activated=self.search)
+        QShortcut(QKeySequence("Ctrl+N"), self, activated=self.connect_ftp)
         QShortcut(QKeySequence("F2"), self, activated=self.batch_rename)
         QShortcut(QKeySequence("F3"), self, activated=lambda: self.open_file(edit=False))
         QShortcut(QKeySequence("F4"), self, activated=lambda: self.open_file(edit=True))
@@ -59,11 +63,41 @@ class MainWindow(QMainWindow):
     def transfer(self, move: bool) -> None:
         src_panel = self.panels[self.active_index()]
         dst_panel = self.panels[1 - self.active_index()]
+        if src_panel.in_remote and dst_panel.in_remote:
+            self._error(ValueError("remote to remote transfer is not supported"))
+            return
+        if (src_panel.in_remote or dst_panel.in_remote) and move:
+            self._error(ValueError("remote folders support copy (F5) only"))
+            return
         if dst_panel.in_archive or (src_panel.in_archive and move):
             self._error(ValueError("archives are read-only; use F5 to extract"))
             return
-        dst = Path(dst_panel.current_path())
-        if src_panel.in_archive:
+        refresh = None
+        if dst_panel.in_remote:
+            client, dst = dst_panel.remote, dst_panel.remote_path
+            srcs = src_panel.selected_paths()
+            names = [s.name for s in srcs]
+            try:
+                taken = {e.name for e in client.listdir(dst)}
+            except OSError as e:
+                self._error(e)
+                return
+            conflicts = [n for n in names if n in taken]
+            fn = client.upload
+            verb = "Upload"
+
+            def refresh():
+                dst_panel.connect_remote(client, dst)
+        elif src_panel.in_remote:
+            dst = Path(dst_panel.current_path())
+            client = src_panel.remote
+            srcs = src_panel.remote_selection()
+            names = [s.rsplit("/", 1)[-1] for s in srcs]
+            conflicts = [n for n in names if (dst / n).exists()]
+            fn = client.download
+            verb = "Download"
+        elif src_panel.in_archive:
+            dst = Path(dst_panel.current_path())
             arc, entries = src_panel.archive, src_panel.archive_selection()
             names = [e.rsplit("/", 1)[-1] for e in entries]
 
@@ -72,6 +106,7 @@ class MainWindow(QMainWindow):
             srcs = entries
             verb = "Extract"
         else:
+            dst = Path(dst_panel.current_path())
             srcs = src_panel.selected_paths()
             names = [s.name for s in srcs]
             fn = ops.move if move else ops.copy
@@ -80,7 +115,8 @@ class MainWindow(QMainWindow):
             return
         if not self._ask(verb, f"{verb} {len(srcs)} item(s) to\n{dst}?"):
             return
-        conflicts = [n for n in names if (dst / n).exists()]
+        if not (dst_panel.in_remote or src_panel.in_remote):
+            conflicts = [n for n in names if (dst / n).exists()]
         overwrite = False
         if conflicts:
             shown = ", ".join(conflicts[:5]) + (" ..." if len(conflicts) > 5 else "")
@@ -88,9 +124,10 @@ class MainWindow(QMainWindow):
                 return
             overwrite = True
         self._run_task(verb, len(srcs),
-                       lambda progress: fn(srcs, dst, overwrite=overwrite, progress=progress))
+                       lambda progress: fn(srcs, dst, overwrite=overwrite, progress=progress),
+                       on_done=refresh)
 
-    def _run_task(self, title: str, total: int, task) -> None:
+    def _run_task(self, title: str, total: int, task, on_done=None) -> None:
         if self._worker is not None:
             return  # one background task at a time
         dialog = QProgressDialog(title, "Cancel", 0, total, self)
@@ -107,13 +144,47 @@ class MainWindow(QMainWindow):
             dialog.deleteLater()
             worker.deleteLater()
             self._worker = None
+            if on_done:
+                try:
+                    on_done()
+                except OSError as e:
+                    self._error(e)
 
         worker.finished.connect(finished)
         self._worker = worker
         worker.start()
 
+    def connect_ftp(self) -> None:
+        panel = self.panels[self.active_index()]
+        url, ok = QInputDialog.getText(
+            self, "Connect", "FTP URL (ftp://[user[:password]@]host[:port][/path]):")
+        if not ok or not url.strip():
+            return
+        u = urlsplit(url.strip() if "://" in url else f"ftp://{url.strip()}")
+        try:
+            if u.scheme != "ftp" or not u.hostname:
+                raise ValueError("expected ftp://host[:port][/path]")
+            user = unquote(u.username) if u.username else "anonymous"
+            password = unquote(u.password) if u.password is not None else ""
+            if u.username and u.password is None:
+                password, ok = QInputDialog.getText(
+                    self, "Connect", f"Password for {user}@{u.hostname}:", QLineEdit.Password)
+                if not ok:
+                    return
+            client = FtpClient(u.hostname, u.port or 21, user, password)
+            try:
+                panel.connect_remote(client, unquote(u.path) or "/")
+            except OSError:
+                client.close()
+                raise
+        except (OSError, ValueError) as e:
+            self._error(e)
+
     def search(self) -> None:
         panel = self.panels[self.active_index()]
+        if panel.in_remote:
+            self._error(ValueError("search is not available on remote folders"))
+            return
         pattern, ok = QInputDialog.getText(self, "Search", "Name (glob like *.txt, or text):")
         if not ok or not pattern.strip():
             return
@@ -125,8 +196,8 @@ class MainWindow(QMainWindow):
 
     def batch_rename(self) -> None:
         panel = self.panels[self.active_index()]
-        if panel.in_archive:
-            self._error(ValueError("archives are read-only"))
+        if panel.in_archive or panel.in_remote:
+            self._error(ValueError("archives and remote folders are read-only"))
             return
         paths = panel.selected_paths()
         if not paths:
@@ -162,6 +233,9 @@ class MainWindow(QMainWindow):
 
     def make_dir(self) -> None:
         panel = self.panels[self.active_index()]
+        if panel.in_remote:
+            self._error(ValueError("remote folders are read-only"))
+            return
         name, ok = QInputDialog.getText(self, "New folder", "Name:")
         if not ok or not name:
             return

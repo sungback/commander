@@ -211,3 +211,79 @@ def test_search_dialog_navigates(tmp_path, monkeypatch):
     monkeypatch.setattr(SearchDialog, "exec", fake_exec)
     win.search()
     assert win.panels[0].current_path() == str(b / "deep")
+
+
+def test_ftp_browse_download_upload(tmp_path, monkeypatch):
+    import threading
+
+    from pyftpdlib.authorizers import DummyAuthorizer
+    from pyftpdlib.handlers import FTPHandler
+    from pyftpdlib.servers import FTPServer
+    from PySide6.QtCore import QItemSelectionModel, Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QInputDialog
+
+    _app, win, a, b = _setup(tmp_path, monkeypatch)
+    root = tmp_path / "srv"
+    (root / "sub").mkdir(parents=True)
+    (root / "sub" / "r.txt").write_text("remote")
+    auth = DummyAuthorizer()
+    auth.add_user("u", "p", str(root), perm="elradfmwMT")
+    srv = FTPServer(("127.0.0.1", 0), type("H", (FTPHandler,), {"authorizer": auth}))
+    stop = threading.Event()
+
+    def loop():
+        while not stop.is_set():
+            srv.serve_forever(timeout=0.05, blocking=False)
+
+    t = threading.Thread(target=loop, daemon=True)
+    t.start()
+    try:
+        win.panels[0].set_path(str(a))
+        win.panels[1].set_path(str(b))
+        win.active_index = lambda: 1
+        monkeypatch.setattr(QInputDialog, "getText",
+                            lambda *_a, **_k: (f"ftp://u:p@127.0.0.1:{srv.address[1]}/", True))
+        win.connect_ftp()
+        p = win.panels[1]
+        assert p.in_remote and p.remote_path == "/"
+
+        def rows():
+            m = p.view.model()
+            return [m.item(r, 0).text() for r in range(m.rowCount())]
+
+        assert rows() == ["..", "sub"]
+        p._tab._open(p.view.model().index(1, 0))
+        assert p.remote_path == "/sub" and rows() == ["..", "r.txt"]
+
+        # download remote -> local panel 0
+        win.active_index = lambda: 1
+        flags = QItemSelectionModel.Select | QItemSelectionModel.Rows
+        p.view.selectionModel().select(p.view.model().index(1, 0), flags)
+        win.panels[0].set_path(str(a))
+        win.transfer(move=False)
+        _idle(win)
+        assert (a / "r.txt").read_text() == "remote"
+
+        # upload local f.txt -> remote /sub
+        win.active_index = lambda: 0
+        _wait(lambda: "f.txt" in _names(win.panels[0]))
+        idx = win.panels[0].model.index(str(a / "f.txt"))
+        win.panels[0].view.selectionModel().select(idx, flags)
+        win.transfer(move=False)
+        _idle(win)
+        assert (root / "sub" / "f.txt").read_text() == "x"
+        assert "f.txt" in rows()
+
+        # Backspace goes up and stops at the root
+        win.active_index = lambda: 1
+        QTest.keyClick(p.view, Qt.Key_Backspace)
+        assert p.remote_path == "/"
+        QTest.keyClick(p.view, Qt.Key_Backspace)
+        assert p.remote_path == "/" and p.in_remote
+        p.set_path(str(b))
+        assert not p.in_remote
+    finally:
+        stop.set()
+        t.join(timeout=2)
+        srv.close_all()
