@@ -30,6 +30,8 @@ class MainWindow(QMainWindow):
             splitter.addWidget(p)
         self.setCentralWidget(splitter)
         QShortcut(QKeySequence("Tab"), self, activated=self.switch_panel)
+        QShortcut(QKeySequence("Ctrl+T"), self, activated=lambda: self.panels[self.active_index()].new_tab())
+        QShortcut(QKeySequence("Ctrl+W"), self, activated=lambda: self.panels[self.active_index()].close_tab())
         QShortcut(QKeySequence("F5"), self, activated=lambda: self.transfer(move=False))
         QShortcut(QKeySequence("F6"), self, activated=lambda: self.transfer(move=True))
         QShortcut(QKeySequence("F7"), self, activated=self.make_dir)

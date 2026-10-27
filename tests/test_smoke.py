@@ -90,3 +90,22 @@ def test_f5_f6_f7_f8(tmp_path, monkeypatch):
     win.delete()
     _idle(win)
     assert list(a.iterdir()) == []
+
+
+def test_tabs_are_independent(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    panel = MainWindow().panels[0]
+    panel.set_path(str(a))
+    panel.new_tab()
+    assert panel.tabs.count() == 2 and panel.current_path() == str(a)
+    panel.set_path(str(b))
+    assert panel.tabs.tabText(1) == "b"
+    panel.tabs.setCurrentIndex(0)
+    assert panel.current_path() == str(a)
+    panel.close_tab(1)
+    panel.close_tab(0)  # last tab is kept
+    assert panel.tabs.count() == 1
+    app.processEvents()
