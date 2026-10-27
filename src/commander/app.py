@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QSplitter,
 )
 
-from . import archive, ops
+from . import archive, ops, rename
 from .panel import FilePanel
 from .search_dialog import SearchDialog
 from .viewer import ViewerDialog
@@ -35,6 +35,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+T"), self, activated=lambda: self.panels[self.active_index()].new_tab())
         QShortcut(QKeySequence("Ctrl+W"), self, activated=lambda: self.panels[self.active_index()].close_tab())
         QShortcut(QKeySequence("Ctrl+F"), self, activated=self.search)
+        QShortcut(QKeySequence("F2"), self, activated=self.batch_rename)
         QShortcut(QKeySequence("F3"), self, activated=lambda: self.open_file(edit=False))
         QShortcut(QKeySequence("F4"), self, activated=lambda: self.open_file(edit=True))
         QShortcut(QKeySequence("F5"), self, activated=lambda: self.transfer(move=False))
@@ -121,6 +122,34 @@ class MainWindow(QMainWindow):
         if dlg.chosen is not None:
             target = dlg.chosen if dlg.chosen.is_dir() else dlg.chosen.parent
             panel.set_path(str(target))
+
+    def batch_rename(self) -> None:
+        panel = self.panels[self.active_index()]
+        if panel.in_archive:
+            self._error(ValueError("archives are read-only"))
+            return
+        paths = panel.selected_paths()
+        if not paths:
+            return
+        find, ok = QInputDialog.getText(self, "Rename", "Find (prefix 're:' for regex):")
+        if not ok or not find:
+            return
+        replace, ok = QInputDialog.getText(self, "Rename", "Replace with:")
+        if not ok:
+            return
+        regex = find.startswith("re:")
+        try:
+            pairs = rename.plan(paths, find[3:] if regex else find, replace, regex=regex)
+            if not pairs:
+                return
+            preview = "\n".join(f"{s.name} -> {d.name}" for s, d in pairs[:10])
+            if len(pairs) > 10:
+                preview += f"\n... (+{len(pairs) - 10} more)"
+            if not self._ask("Rename", f"Rename {len(pairs)} item(s)?\n\n{preview}"):
+                return
+            rename.apply(pairs)
+        except (OSError, ValueError) as e:
+            self._error(e)
 
     def open_file(self, edit: bool) -> None:
         paths = [p for p in self.panels[self.active_index()].selected_paths() if p.is_file()]
