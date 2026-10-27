@@ -2,8 +2,15 @@ import sys
 from pathlib import Path
 
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QApplication, QMainWindow, QSplitter
+from PySide6.QtWidgets import (
+    QApplication,
+    QInputDialog,
+    QMainWindow,
+    QMessageBox,
+    QSplitter,
+)
 
+from . import ops
 from .panel import FilePanel
 
 
@@ -19,6 +26,10 @@ class MainWindow(QMainWindow):
             splitter.addWidget(p)
         self.setCentralWidget(splitter)
         QShortcut(QKeySequence("Tab"), self, activated=self.switch_panel)
+        QShortcut(QKeySequence("F5"), self, activated=lambda: self.transfer(move=False))
+        QShortcut(QKeySequence("F6"), self, activated=lambda: self.transfer(move=True))
+        QShortcut(QKeySequence("F7"), self, activated=self.make_dir)
+        QShortcut(QKeySequence("F8"), self, activated=self.delete)
         self.panels[0].view.setFocus()
 
     def active_index(self) -> int:
@@ -26,6 +37,56 @@ class MainWindow(QMainWindow):
 
     def switch_panel(self) -> None:
         self.panels[1 - self.active_index()].view.setFocus()
+
+    def _ask(self, title: str, text: str) -> bool:
+        return QMessageBox.question(self, title, text) == QMessageBox.Yes
+
+    def _error(self, e: Exception) -> None:
+        QMessageBox.critical(self, "Error", f"{type(e).__name__}: {e}")
+
+    def transfer(self, move: bool) -> None:
+        src_panel = self.panels[self.active_index()]
+        dst_panel = self.panels[1 - self.active_index()]
+        srcs = src_panel.selected_paths()
+        if not srcs:
+            return
+        dst = Path(dst_panel.current_path())
+        verb = "Move" if move else "Copy"
+        if not self._ask(verb, f"{verb} {len(srcs)} item(s) to\n{dst}?"):
+            return
+        conflicts = [s.name for s in srcs if (dst / s.name).exists()]
+        overwrite = False
+        if conflicts:
+            names = ", ".join(conflicts[:5]) + (" ..." if len(conflicts) > 5 else "")
+            if not self._ask("Overwrite", f"Already exists:\n{names}\n\nOverwrite?"):
+                return
+            overwrite = True
+        try:
+            (ops.move if move else ops.copy)(srcs, dst, overwrite=overwrite)
+        except (OSError, ValueError) as e:
+            self._error(e)
+
+    def make_dir(self) -> None:
+        panel = self.panels[self.active_index()]
+        name, ok = QInputDialog.getText(self, "New folder", "Name:")
+        if not ok or not name:
+            return
+        try:
+            ops.make_dir(Path(panel.current_path()), name)
+        except (OSError, ValueError) as e:
+            self._error(e)
+
+    def delete(self) -> None:
+        panel = self.panels[self.active_index()]
+        paths = panel.selected_paths()
+        if not paths:
+            return
+        if not self._ask("Delete", f"Permanently delete {len(paths)} item(s)?"):
+            return
+        try:
+            ops.delete(paths)
+        except OSError as e:
+            self._error(e)
 
 
 def main() -> int:

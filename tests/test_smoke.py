@@ -14,3 +14,72 @@ def test_window_has_two_panels(tmp_path):
     assert len(win.panels) == 2
     assert win.panels[0].current_path() == str(tmp_path)
     app.processEvents()
+
+
+def _names(panel):
+    root = panel.view.rootIndex()
+    return {panel.model.fileName(panel.model.index(r, 0, root))
+            for r in range(panel.model.rowCount(root))}
+
+
+def _wait(cond, timeout_ms=3000):
+    """QFileSystemModel loads asynchronously; poll until cond() holds."""
+    from PySide6.QtTest import QTest
+
+    waited = 0
+    while not cond() and waited < timeout_ms:
+        QTest.qWait(10)
+        waited += 10
+    assert cond(), "timed out waiting for model"
+
+
+def _setup(tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog, QMessageBox
+
+    app = QApplication.instance() or QApplication([])
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    (a / "f.txt").write_text("x")
+    monkeypatch.setattr(QMessageBox, "question", lambda *_: QMessageBox.Yes)
+    monkeypatch.setattr(QMessageBox, "critical", lambda *_: None)
+    monkeypatch.setattr(QInputDialog, "getText", lambda *_: ("newdir", True))
+    win = MainWindow()
+    win.show()
+    win.panels[0].set_path(str(a))
+    win.panels[1].set_path(str(b))
+    _wait(lambda: "f.txt" in _names(win.panels[0]))
+    win.panels[0].view.setFocus()
+    return app, win, a, b
+
+
+def _select_file(win):
+    p = win.panels[0]
+    for r in range(p.model.rowCount(p.view.rootIndex())):
+        idx = p.model.index(r, 0, p.view.rootIndex())
+        if p.model.fileName(idx) == "f.txt":
+            p.view.setCurrentIndex(idx)
+            return
+    raise AssertionError("f.txt not listed")
+
+
+def test_f5_f6_f7_f8(tmp_path, monkeypatch):
+    _app, win, a, b = _setup(tmp_path, monkeypatch)
+    win.active_index = lambda: 0  # offscreen focus is unreliable
+    _select_file(win)
+    assert [p.name for p in win.panels[0].selected_paths()] == ["f.txt"]
+
+    win.transfer(move=False)
+    assert (b / "f.txt").exists() and (a / "f.txt").exists()
+
+    win.make_dir()
+    assert (a / "newdir").is_dir()
+    _wait(lambda: "newdir" in _names(win.panels[0]))
+
+    win.transfer(move=True)  # f.txt exists in b -> overwrite prompt auto-yes
+    assert not (a / "f.txt").exists() and (b / "f.txt").exists()
+
+    _wait(lambda: "f.txt" not in _names(win.panels[0]))
+    win.panels[0].view.selectAll()
+    win.delete()
+    assert list(a.iterdir()) == []
