@@ -96,3 +96,14 @@ def test_bad_login_raises(server):
     _, port = server
     with pytest.raises(OSError):
         FtpClient("127.0.0.1", port, "u", "wrong", timeout=5)
+
+
+def test_listdir_drops_unsafe_names(client):
+    _, c = client
+    c._ftp.mlsd = lambda *a, **k: iter([
+        ("../evil", {"type": "file", "size": "1"}),
+        ("a/b", {"type": "file", "size": "1"}),
+        ("a\\b", {"type": "dir"}),
+        ("ok.txt", {"type": "file", "size": "2"}),
+    ])
+    assert [e.name for e in c.listdir("/")] == ["ok.txt"]

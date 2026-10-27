@@ -25,6 +25,11 @@ def _oserrors():
         raise ConnectionError("connection closed") from e
 
 
+def _safe_name(name: str) -> bool:
+    """Server-supplied names become local paths, so reject anything that could escape."""
+    return bool(name) and name not in (".", "..") and not any(c in name for c in "/\\\0")
+
+
 class FtpClient:
     def __init__(self, host: str, port: int = 21, user: str = "anonymous", password: str = "",
                  timeout: float = 15):
@@ -54,7 +59,7 @@ class FtpClient:
             listing = list(self._ftp.mlsd(path, facts=["type", "size"]))
         for name, facts in listing:
             kind = facts.get("type", "")
-            if kind in ("cdir", "pdir") or name in (".", ".."):
+            if kind in ("cdir", "pdir") or not _safe_name(name):
                 continue
             if kind in ("dir", "file"):
                 out.append(RemoteEntry(name, kind == "dir", int(facts.get("size", 0))))
