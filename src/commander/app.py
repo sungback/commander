@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QSplitter,
 )
 
-from . import ops
+from . import archive, ops
 from .panel import FilePanel
 from .viewer import ViewerDialog
 from .workers import Worker
@@ -56,21 +56,34 @@ class MainWindow(QMainWindow):
     def transfer(self, move: bool) -> None:
         src_panel = self.panels[self.active_index()]
         dst_panel = self.panels[1 - self.active_index()]
-        srcs = src_panel.selected_paths()
-        if not srcs:
+        if dst_panel.in_archive or (src_panel.in_archive and move):
+            self._error(ValueError("archives are read-only; use F5 to extract"))
             return
         dst = Path(dst_panel.current_path())
-        verb = "Move" if move else "Copy"
+        if src_panel.in_archive:
+            arc, entries = src_panel.archive, src_panel.archive_selection()
+            names = [e.rsplit("/", 1)[-1] for e in entries]
+
+            def fn(srcs, dst, overwrite, progress):
+                archive.extract(arc, entries, dst, overwrite=overwrite, progress=progress)
+            srcs = entries
+            verb = "Extract"
+        else:
+            srcs = src_panel.selected_paths()
+            names = [s.name for s in srcs]
+            fn = ops.move if move else ops.copy
+            verb = "Move" if move else "Copy"
+        if not srcs:
+            return
         if not self._ask(verb, f"{verb} {len(srcs)} item(s) to\n{dst}?"):
             return
-        conflicts = [s.name for s in srcs if (dst / s.name).exists()]
+        conflicts = [n for n in names if (dst / n).exists()]
         overwrite = False
         if conflicts:
-            names = ", ".join(conflicts[:5]) + (" ..." if len(conflicts) > 5 else "")
-            if not self._ask("Overwrite", f"Already exists:\n{names}\n\nOverwrite?"):
+            shown = ", ".join(conflicts[:5]) + (" ..." if len(conflicts) > 5 else "")
+            if not self._ask("Overwrite", f"Already exists:\n{shown}\n\nOverwrite?"):
                 return
             overwrite = True
-        fn = ops.move if move else ops.copy
         self._run_task(verb, len(srcs),
                        lambda progress: fn(srcs, dst, overwrite=overwrite, progress=progress))
 

@@ -143,3 +143,49 @@ def test_keyboard_navigation(tmp_path):
     QTest.keyClick(panel.view, Qt.Key_Space)
     assert panel.selected_paths() == []
     app.processEvents()
+
+
+def test_browse_and_extract_archive(tmp_path, monkeypatch):
+    import zipfile
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    _app, win, a, b = _setup(tmp_path, monkeypatch)
+    win.active_index = lambda: 0
+    with zipfile.ZipFile(a / "z.zip", "w") as z:
+        z.writestr("d/in.txt", "hi")
+    p = win.panels[0]
+    _wait(lambda: "z.zip" in _names(p))
+
+    def rows():
+        m = p.view.model()
+        root = p.view.rootIndex()
+        return [m.index(r, 0, root).data() for r in range(m.rowCount(root))]
+
+    def select(name):
+        m = p.view.model()
+        p.view.setCurrentIndex(m.index(rows().index(name), 0, p.view.rootIndex()))
+
+    select("z.zip")
+    QTest.keyClick(p.view, Qt.Key_Return)
+    assert p.in_archive and rows() == ["..", "d"]
+    assert p.tabs.tabText(0) == "z.zip"
+    select("d")
+    QTest.keyClick(p.view, Qt.Key_Return)
+    assert rows() == ["..", "in.txt"]
+
+    select("in.txt")
+    win.transfer(move=False)  # extract into panel 1 (b)
+    _idle(win)
+    assert (b / "in.txt").read_text() == "hi"
+
+    win.transfer(move=True)  # read-only: no change, error dialog is stubbed
+    win.delete()
+    assert (a / "z.zip").exists()
+
+    QTest.keyClick(p.view, Qt.Key_Backspace)
+    assert rows() == ["..", "d"]
+    QTest.keyClick(p.view, Qt.Key_Backspace)
+    assert not p.in_archive and p.current_path() == str(a)
+    _wait(lambda: "z.zip" in _names(p))
