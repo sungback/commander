@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import archive
-from .remote import FtpClient
+from .remote import FtpClient, SftpClient
 
 
 class _View(QTreeView):
@@ -56,7 +56,7 @@ class _Tab(QWidget):
         self.inner = ""
         self._entries: list[archive.Entry] = []
         self.arch_model = QStandardItemModel(self)  # also used for remote listings
-        self.remote: FtpClient | None = None  # set while browsing an FTP server
+        self.remote: FtpClient | SftpClient | None = None  # set while browsing an FTP server
         self.remote_path = "/"
         self.local_dir = path  # last local folder, kept while browsing a remote
 
@@ -109,14 +109,14 @@ class _Tab(QWidget):
                 for e in archive.children(self._entries, inner)]
         self._show_rows(rows, f"{path}:/{inner}", str(path))
 
-    def open_remote(self, client: FtpClient, path: str = "/") -> None:
+    def open_remote(self, client: FtpClient | SftpClient, path: str = "/") -> None:
         entries = client.listdir(path)  # raises before any state changes
         if self.remote is not client:
             self._leave_archive()
             self.remote = client
         self.remote_path = path
         rows = [(e.name, e.is_dir, e.size) for e in entries]
-        self._show_rows(rows, f"ftp://{client.host}:{client.port}{path}", f"{client.host}{path}")
+        self._show_rows(rows, f"{client.scheme}://{client.host}:{client.port}{path}", f"{client.host}{path}")
 
     def _show_rows(self, rows: list[tuple[str, bool, int]], bar: str, title: str) -> None:
         m = self.arch_model
@@ -274,7 +274,7 @@ class FilePanel(QWidget):
         return self._tab.in_remote
 
     @property
-    def remote(self) -> FtpClient | None:
+    def remote(self) -> FtpClient | SftpClient | None:
         return self._tab.remote
 
     @property
@@ -284,7 +284,7 @@ class FilePanel(QWidget):
     def remote_selection(self) -> list[str]:
         return self._tab.remote_selection()
 
-    def connect_remote(self, client: FtpClient, path: str = "/") -> None:
+    def connect_remote(self, client: FtpClient | SftpClient, path: str = "/") -> None:
         self._tab.open_remote(client, path)
 
     def current_path(self) -> str:

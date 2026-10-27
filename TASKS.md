@@ -4,7 +4,7 @@
 상태: `[ ]` 대기 / `[~]` 진행 중 / `[x]` 완료
 
 ## 현재 작업
-- 다음: SFTP (paramiko 추가, remote.py에 공통 인터페이스 도입 검토)
+- 다음: (미정)
 
 ## MVP
 - [x] 스캐폴딩 (pyproject, venv, 진입점) — 19bb4eb
@@ -21,10 +21,13 @@
 - [x] 검색 (search.py + SearchWorker, Ctrl+F: 글롭/부분 문자열 재귀 검색, 결과 스트리밍·중지, 5000건 제한, 결과 선택 시 해당 폴더로 이동)
 - [x] 일괄 이름 변경 (rename.py, F2: 찾기/바꾸기, `re:` 접두사는 정규식, 미리보기 확인, 충돌·중복 거부, 임시 이름 경유로 교환 가능)
 - [x] FTP (remote.py: ftplib, MLSD 필요. Ctrl+N으로 `ftp://[user[:pw]@]host[:port][/path]` 연결, 패널 탭이 원격 모드로 전환, Enter/Backspace 탐색, F5로 다운로드·업로드(폴더 재귀))
-- [ ] SFTP
+- [x] SFTP (remote.py SftpClient: paramiko, FtpClient와 같은 메서드. Ctrl+N에 `sftp://[user[:pw]@]host[:port][/path]`, 패널 로직 공유)
 
 ## 결정 / 메모
 - FTP: 평문(FTPS 미지원), 이동·삭제·폴더 생성·검색·이름 변경은 원격에서 거부, 원격↔원격 전송 불가, 연결은 UI 스레드에서 수행(최대 15초 블록), 취소는 파일 사이에서만 반영
+- SFTP: 미등록 호스트 키는 거부(RejectPolicy, known_hosts 사용 → 먼저 ssh로 접속해 등록), 비밀번호 인증만(키 파일 미지원), 심볼릭 링크는 목록 제외, FTP와 같은 제약(이동·삭제 등 원격 거부)
+- 다운로드는 로컬 심볼릭 링크를 따라 쓰지 않고 링크 자체를 교체. MLSD size 파싱 오류는 0으로 처리
+- 테스트용 SFTP 서버는 test_sftp.py의 인프로세스 paramiko 서버
 - 테스트용 FTP 서버는 dev 의존성 pyftpdlib (127.0.0.1 임의 포트)
 - 스택: Python 3.13 + PySide6, pytest, ruff
 - `.claude/`는 전역 gitignore 대상이라 커밋되지 않음

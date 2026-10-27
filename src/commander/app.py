@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 
 from . import archive, ops, rename
 from .panel import FilePanel
-from .remote import FtpClient
+from .remote import FtpClient, SftpClient
 from .search_dialog import SearchDialog
 from .viewer import ViewerDialog
 from .workers import Worker
@@ -157,21 +157,25 @@ class MainWindow(QMainWindow):
     def connect_ftp(self) -> None:
         panel = self.panels[self.active_index()]
         url, ok = QInputDialog.getText(
-            self, "Connect", "FTP URL (ftp://[user[:password]@]host[:port][/path]):")
+            self, "Connect", "URL (ftp|sftp://[user[:password]@]host[:port][/path]):")
         if not ok or not url.strip():
             return
         u = urlsplit(url.strip() if "://" in url else f"ftp://{url.strip()}")
         try:
-            if u.scheme != "ftp" or not u.hostname:
-                raise ValueError("expected ftp://host[:port][/path]")
-            user = unquote(u.username) if u.username else "anonymous"
+            if u.scheme not in ("ftp", "sftp") or not u.hostname:
+                raise ValueError("expected ftp|sftp://host[:port][/path]")
+            sftp = u.scheme == "sftp"
+            user = unquote(u.username) if u.username else ("" if sftp else "anonymous")
             password = unquote(u.password) if u.password is not None else ""
             if u.username and u.password is None:
                 password, ok = QInputDialog.getText(
                     self, "Connect", f"Password for {user}@{u.hostname}:", QLineEdit.Password)
                 if not ok:
                     return
-            client = FtpClient(u.hostname, u.port or 21, user, password)
+            if sftp:
+                client = SftpClient(u.hostname, u.port or 22, user, password)
+            else:
+                client = FtpClient(u.hostname, u.port or 21, user, password)
             try:
                 panel.connect_remote(client, unquote(u.path) or "/")
             except OSError:

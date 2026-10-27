@@ -107,3 +107,24 @@ def test_listdir_drops_unsafe_names(client):
         ("ok.txt", {"type": "file", "size": "2"}),
     ])
     assert [e.name for e in c.listdir("/")] == ["ok.txt"]
+
+
+def test_download_does_not_write_through_symlink(client, tmp_path):
+    root, c = client
+    (root / "f.txt").write_text("new")
+    dst = tmp_path / "dst"
+    dst.mkdir()
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep")
+    (dst / "f.txt").symlink_to(victim)
+    with pytest.raises(FileExistsError):
+        c.download(["/f.txt"], dst)
+    c.download(["/f.txt"], dst, overwrite=True)
+    assert victim.read_text() == "keep"
+    assert not (dst / "f.txt").is_symlink() and (dst / "f.txt").read_text() == "new"
+
+
+def test_listdir_tolerates_bad_size(client):
+    _, c = client
+    c._ftp.mlsd = lambda *a, **k: iter([("x.txt", {"type": "file", "size": "NaN"})])
+    assert [(e.name, e.size) for e in c.listdir("/")] == [("x.txt", 0)]
