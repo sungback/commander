@@ -1,7 +1,7 @@
 import posixpath
 from pathlib import Path
 
-from PySide6.QtCore import QDir, QItemSelectionModel, QModelIndex, Qt
+from PySide6.QtCore import QDir, QItemSelectionModel, QModelIndex, QSortFilterProxyModel, Qt
 from PySide6.QtGui import QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QFileSystemModel,
@@ -34,10 +34,71 @@ class _LocalModel(QFileSystemModel):
 
     def data(self, index: QModelIndex, role: int = Qt.DisplayRole):
         if role == Qt.DisplayRole and index.column() == 1 and self.isDir(index):
+            if self.fileName(index) == "..":
+                return ""
             path = self.filePath(index)
             if path in self.dir_sizes:
                 return ops.format_size(self.dir_sizes[path])
         return super().data(index, role)
+
+
+class _SortProxy(QSortFilterProxyModel):
+    """Keep '..' first and directories above files regardless of sort column/order."""
+
+    def __init__(self, src: _LocalModel, parent=None):
+        super().__init__(parent)
+        self._src = src
+        self.setSourceModel(src)
+        self.setDynamicSortFilter(True)
+
+    @property
+    def dir_sizes(self) -> dict[str, int]:
+        return self._src.dir_sizes
+
+    def set_dir_size(self, path: str, size: int) -> None:
+        self._src.set_dir_size(path, size)
+
+    def setRootPath(self, path: str) -> QModelIndex:
+        return self.mapFromSource(self._src.setRootPath(path))
+
+    def index(self, row_or_path, column: int = 0, parent: QModelIndex | None = None) -> QModelIndex:
+        if isinstance(row_or_path, str):
+            return self.mapFromSource(self._src.index(row_or_path, column))
+        return super().index(row_or_path, column, QModelIndex() if parent is None else parent)
+
+    def filePath(self, index: QModelIndex) -> str:
+        return self._src.filePath(self.mapToSource(index))
+
+    def fileName(self, index: QModelIndex) -> str:
+        return self._src.fileName(self.mapToSource(index))
+
+    def isDir(self, index: QModelIndex) -> bool:
+        return self._src.isDir(self.mapToSource(index))
+
+    def size(self, index: QModelIndex) -> int:
+        return self._src.size(self.mapToSource(index))
+
+    def lessThan(self, left: QModelIndex, right: QModelIndex) -> bool:
+        src = self._src
+        l0 = left.siblingAtColumn(0)
+        r0 = right.siblingAtColumn(0)
+        l_name = src.fileName(l0)
+        r_name = src.fileName(r0)
+        asc = self.sortOrder() == Qt.AscendingOrder
+        if l_name == "..":
+            return asc
+        if r_name == "..":
+            return not asc
+        l_dir = src.isDir(l0)
+        r_dir = src.isDir(r0)
+        if l_dir != r_dir:
+            return l_dir if asc else r_dir
+        if left.column() == 1:
+            l_sz = src.dir_sizes.get(src.filePath(l0), -1) if l_dir else src.size(l0)
+            r_sz = src.dir_sizes.get(src.filePath(r0), -1) if r_dir else src.size(r0)
+            if l_sz != r_sz:
+                return l_sz < r_sz
+        return l_name.lower() < r_name.lower()
 
 
 class _View(QTreeView):
@@ -67,9 +128,10 @@ class _View(QTreeView):
 class _Tab(QWidget):
     def __init__(self, path: str):
         super().__init__()
-        self.model = _LocalModel(self)
-        self.model.setFilter(QDir.AllEntries | QDir.NoDot)
-        self.model.setRootPath(path)
+        self._fs_model = _LocalModel(self)
+        self._fs_model.setFilter(QDir.AllEntries | QDir.NoDot)
+        self._fs_model.setRootPath(path)
+        self.model = _SortProxy(self._fs_model, self)
 
         self.path_bar = QLineEdit(path)
         self.path_changed = None  # callback(path), set by FilePanel
@@ -89,13 +151,13 @@ class _Tab(QWidget):
         self.view.setRootIndex(self.model.index(path))
         self.view.setRootIsDecorated(False)
         self.view.setSortingEnabled(True)
-        self.view.sortByColumn(0, self.view.header().sortIndicatorOrder())
+        self.view.sortByColumn(0, Qt.AscendingOrder)
         self.view.setSelectionMode(QTreeView.ExtendedSelection)
         self.view.setColumnWidth(0, 260)
         self.view.doubleClicked.connect(self._open)
 
         self.status_bar = QLabel()
-        self.model.directoryLoaded.connect(lambda _: self.update_status())
+        self._fs_model.directoryLoaded.connect(lambda _: self.update_status())
         self.model.rowsInserted.connect(self._on_rows_changed)
         self.model.rowsRemoved.connect(self._on_rows_changed)
         self._bind_selection()
@@ -307,6 +369,9 @@ class _Tab(QWidget):
                 self.go_up()
             elif item.data(Qt.UserRole):
                 self.open_archive(self.archive, (self.inner + "/" if self.inner else "") + item.text())
+            return
+        if self.model.fileName(idx) == "..":
+            self.go_up()
             return
         path = self.model.filePath(idx)
         if self.model.isDir(idx) or archive.is_archive(Path(path)):

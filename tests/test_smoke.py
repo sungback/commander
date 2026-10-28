@@ -123,6 +123,10 @@ def test_keyboard_navigation(tmp_path):
     panel = MainWindow().panels[0]
     panel.set_path(str(tmp_path))
     _wait(lambda: {"sub", "x.txt"} <= _names(panel))
+    assert panel.model.index(0, 0, panel.view.rootIndex()).data() == ".."
+    panel.view.sortByColumn(0, Qt.DescendingOrder)
+    assert panel.model.index(0, 0, panel.view.rootIndex()).data() == ".."
+    panel.view.sortByColumn(0, Qt.AscendingOrder)
 
     def row(name):
         root = panel.view.rootIndex()
