@@ -8,11 +8,12 @@ cd "$(dirname "$0")/.."
 
 pkill -f "dist/Commander.app/Contents/MacOS/Commander" 2>/dev/null || true
 pkill -f "dist/commander.app/Contents/MacOS/commander" 2>/dev/null || true
+pkill -f "/Applications/commander.app/Contents/MacOS/commander" 2>/dev/null || true
 pkill -f "python -m commander" 2>/dev/null || true
 
 if [ "${1:-}" = "--app" ]; then
     PATH="$(pwd)/.venv/bin:$PATH" packaging/build_mac.sh
-    open dist/commander.app
+    open /Applications/commander.app
 else
     exec .venv/bin/python -m commander
 fi

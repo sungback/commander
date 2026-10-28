@@ -27,4 +27,6 @@ ln -s /Applications dist/dmg/Applications
 rm -f dist/commander.dmg
 hdiutil create -quiet -volname commander -srcfolder dist/dmg -ov -format UDZO dist/commander.dmg
 rm -rf dist/dmg
-ls -lh dist/commander.zip dist/commander.dmg
+rm -rf /Applications/commander.app
+ditto dist/commander.app /Applications/commander.app
+ls -lh dist/commander.zip dist/commander.dmg /Applications/commander.app

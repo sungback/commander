@@ -36,7 +36,7 @@ tests/              # 단위 및 오프스크린 UI 통합 테스트
 ```sh
 ./scripts/check.sh           # 검증 게이트 (ruff + pytest + 실제 홈 디렉터리 오프스크린 스모크/성능 체크)
 ./scripts/run.sh             # 기존 실행 중인 앱 종료 후 소스 직접 실행
-./scripts/run.sh --app       # 기존 앱 종료 후 dist/commander.app 재빌드 및 실행
+./scripts/run.sh --app       # 기존 앱 종료 후 재빌드 및 /Applications/commander.app 설치·실행
 ```
 
 ## 아키텍처 불변식 (Invariants) & 주의사항 (Gotchas)
