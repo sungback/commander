@@ -108,6 +108,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self.save_state()
+        ops.save_size_cache()
         super().closeEvent(event)
 
     def active_index(self) -> int:
@@ -410,12 +411,14 @@ def app_icon(size: int = 256) -> QIcon:
 
 def main() -> int:
     _set_macos_app_name("commander")
+    ops.load_size_cache()
     app = QApplication(sys.argv)
     app.setApplicationName("commander")
     app.setApplicationDisplayName("commander")
     app.setWindowIcon(app_icon())
     win = MainWindow(state_file=STATE_FILE)
     app.aboutToQuit.connect(win.save_state)
+    app.aboutToQuit.connect(ops.save_size_cache)
     win.show()
     _set_macos_app_name("commander")
     return app.exec()

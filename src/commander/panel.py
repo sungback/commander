@@ -24,9 +24,11 @@ class _LocalModel(QFileSystemModel):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.dir_sizes: dict[str, int] = {}
+        self.dir_sizes: dict[str, int] = dict(ops.load_size_cache())
 
     def set_dir_size(self, path: str, size: int) -> None:
+        if self.dir_sizes.get(path) == size:
+            return
         self.dir_sizes[path] = size
         idx = self.index(path, 1)
         if idx.isValid():
@@ -39,6 +41,10 @@ class _LocalModel(QFileSystemModel):
             path = self.filePath(index)
             if path in self.dir_sizes:
                 return ops.format_size(self.dir_sizes[path])
+            cached = ops.get_cached_size(path)
+            if cached is not None:
+                self.dir_sizes[path] = cached
+                return ops.format_size(cached)
         return super().data(index, role)
 
 
@@ -357,7 +363,14 @@ class _Tab(QWidget):
             return val or 0
         idx0 = row_idx.siblingAtColumn(0)
         if self.model.isDir(idx0):
-            return self.model.dir_sizes.get(self.model.filePath(idx0), 0)
+            path = self.model.filePath(idx0)
+            if path in self.model.dir_sizes:
+                return self.model.dir_sizes[path]
+            cached = ops.get_cached_size(path)
+            if cached is not None:
+                self.model.dir_sizes[path] = cached
+                return cached
+            return 0
         return self.model.size(idx0)
 
     def update_status(self) -> None:

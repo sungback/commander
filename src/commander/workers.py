@@ -105,8 +105,14 @@ class DirSizeWorker(QThread):
             if self._cancel:
                 return
             path = str(e)
+            cached = ops.get_cached_size(path)
+            if cached is not None:
+                self.sized.emit(path, cached)
+                continue
             size, done = ops.dir_size(e, cancel=lambda: self._cancel, max_dirs=60)
             if not self._cancel:
+                if done:
+                    ops.set_cached_size(path, size)
                 self.sized.emit(path, size)
                 if not done:
                     deferred.append(e)
@@ -114,12 +120,12 @@ class DirSizeWorker(QThread):
             if self._cancel:
                 return
             path = str(e)
-            size, _ = ops.dir_size(
+            size, done = ops.dir_size(
                 e,
                 cancel=lambda: self._cancel,
                 on_progress=lambda s, p=path: self.sized.emit(p, s) if not self._cancel else None,
             )
-            if not self._cancel:
+            if not self._cancel and done:
                 self.sized.emit(path, size)
 
 

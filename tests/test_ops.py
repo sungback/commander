@@ -74,10 +74,20 @@ def test_make_dir(tmp_path):
         ops.make_dir(tmp_path, "new")
 
 
-def test_dir_size_and_format(tree):
+def test_dir_size_and_format(tree, tmp_path):
     src, _ = tree
     (src / "link").symlink_to(src / "d")  # symlinks must not be double-counted
     assert ops.dir_size(src) == (2, True)
+    # Bottom-up subtree caching populates both root and child directory sizes
+    assert ops.get_cached_size(str(src)) == 2
+    assert ops.get_cached_size(str(src / "d")) == 1
+    cache_file = tmp_path / "sizes.json"
+    ops.save_size_cache(cache_file)
+    assert cache_file.is_file()
+    # Mutating a child invalidates both the child and its ancestor cache entries
+    ops.remove(src / "d" / "b.txt")
+    assert ops.get_cached_size(str(src)) is None
+    assert ops.get_cached_size(str(src / "d")) is None
     assert ops.format_size(0) == "0 B"
     assert ops.format_size(512) == "512 B"
     assert ops.format_size(1536) == "1.5 KB"
