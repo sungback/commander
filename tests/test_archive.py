@@ -45,9 +45,10 @@ def test_is_archive(tmp_path, arc):
 
 def test_children(arc):
     entries = archive.read_entries(arc)
-    assert [(e.path, e.is_dir) for e in archive.children(entries)] == [("d", True), ("top.txt", False)]
-    assert [(e.path, e.is_dir) for e in archive.children(entries, "d")] == [
-        ("d/sub", True), ("d/a.txt", False)]
+    assert [(e.path, e.is_dir, e.size) for e in archive.children(entries)] == [
+        ("d", True, 2), ("top.txt", False, 1)]
+    assert [(e.path, e.is_dir, e.size) for e in archive.children(entries, "d")] == [
+        ("d/sub", True, 1), ("d/a.txt", False, 1)]
 
 
 def test_extract_file_and_dir(tmp_path, arc):

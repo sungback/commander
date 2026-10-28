@@ -5,6 +5,7 @@ from PySide6.QtCore import QDir, QItemSelectionModel, QModelIndex, Qt
 from PySide6.QtGui import QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QFileSystemModel,
+    QLabel,
     QLineEdit,
     QMessageBox,
     QTabWidget,
@@ -13,8 +14,29 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import archive
+from . import archive, ops
 from .remote import FtpClient, SftpClient
+
+
+class _LocalModel(QFileSystemModel):
+    """QFileSystemModel that also displays calculated directory sizes."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.dir_sizes: dict[str, int] = {}
+
+    def set_dir_size(self, path: str, size: int) -> None:
+        self.dir_sizes[path] = size
+        idx = self.index(path, 1)
+        if idx.isValid():
+            self.dataChanged.emit(idx, idx, [Qt.DisplayRole])
+
+    def data(self, index: QModelIndex, role: int = Qt.DisplayRole):
+        if role == Qt.DisplayRole and index.column() == 1 and self.isDir(index):
+            path = self.filePath(index)
+            if path in self.dir_sizes:
+                return ops.format_size(self.dir_sizes[path])
+        return super().data(index, role)
 
 
 class _View(QTreeView):
@@ -32,6 +54,8 @@ class _View(QTreeView):
         elif key == Qt.Key_Backspace:
             self._tab.go_up()
         elif key in (Qt.Key_Space, Qt.Key_Insert) and cur.isValid():
+            if key == Qt.Key_Space:
+                self._tab._calc_dir_size(cur)
             self.selectionModel().select(
                 cur, QItemSelectionModel.Toggle | QItemSelectionModel.Rows)
             below = self.indexBelow(cur)
@@ -44,7 +68,7 @@ class _View(QTreeView):
 class _Tab(QWidget):
     def __init__(self, path: str):
         super().__init__()
-        self.model = QFileSystemModel(self)
+        self.model = _LocalModel(self)
         self.model.setFilter(QDir.AllEntries | QDir.NoDot)
         self.model.setRootPath(path)
 
@@ -70,10 +94,18 @@ class _Tab(QWidget):
         self.view.setColumnWidth(0, 260)
         self.view.doubleClicked.connect(self._open)
 
+        self.status_bar = QLabel()
+        self.model.directoryLoaded.connect(lambda _: self.update_status())
+        self.model.rowsInserted.connect(lambda *_: self.update_status())
+        self.model.rowsRemoved.connect(lambda *_: self.update_status())
+        self._bind_selection()
+        self.update_status()
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.path_bar)
         layout.addWidget(self.view)
+        layout.addWidget(self.status_bar)
 
     @property
     def in_archive(self) -> bool:
@@ -95,7 +127,9 @@ class _Tab(QWidget):
             self._leave_archive()
             self.view.setRootIndex(idx)
             self.local_dir = self.model.filePath(idx)
+            self.model.setRootPath(self.local_dir)
             self.path_bar.setText(self.local_dir)
+            self.update_status()
             if self.path_changed:
                 self.path_changed(self.model.filePath(idx))
 
@@ -107,7 +141,7 @@ class _Tab(QWidget):
         self.inner = inner
         rows = [(e.path.rsplit("/", 1)[-1], e.is_dir, e.size)
                 for e in archive.children(self._entries, inner)]
-        self._show_rows(rows, f"{path}:/{inner}", str(path))
+        self._show_rows(rows, f"{path}:/{inner}", str(path), show_dir_size=True)
 
     def open_remote(self, client: FtpClient | SftpClient, path: str = "/") -> None:
         entries = client.listdir(path)  # raises before any state changes
@@ -118,17 +152,23 @@ class _Tab(QWidget):
         rows = [(e.name, e.is_dir, e.size) for e in entries]
         self._show_rows(rows, f"{client.scheme}://{client.host}:{client.port}{path}", f"{client.host}{path}")
 
-    def _show_rows(self, rows: list[tuple[str, bool, int]], bar: str, title: str) -> None:
+    def _show_rows(self, rows: list[tuple[str, bool, int]], bar: str, title: str,
+                   show_dir_size: bool = False) -> None:
         m = self.arch_model
         m.clear()
         m.setHorizontalHeaderLabels(["Name", "Size"])
         for name, is_dir, size in [("..", True, 0)] + rows:
             item = QStandardItem(name)
             item.setData(is_dir, Qt.UserRole)
-            m.appendRow([item, QStandardItem("" if is_dir else str(size))])
+            has_size = (not is_dir or show_dir_size) and name != ".."
+            size_item = QStandardItem(ops.format_size(size) if has_size else "")
+            size_item.setData(size if has_size else None, Qt.UserRole)
+            m.appendRow([item, size_item])
         self.view.setSortingEnabled(False)  # entries are pre-sorted, ".." first
         self.view.setModel(m)
+        self._bind_selection()
         self.path_bar.setText(bar)
+        self.update_status()
         if self.path_changed:
             self.path_changed(title)
 
@@ -141,9 +181,51 @@ class _Tab(QWidget):
             return
         self.archive = None
         self.view.setModel(self.model)
+        self._bind_selection()
         self.view.setSortingEnabled(True)
         self.view.sortByColumn(0, self.view.header().sortIndicatorOrder())
         self.view.setColumnWidth(0, 260)
+
+    def _bind_selection(self) -> None:
+        sel = self.view.selectionModel()
+        if sel is not None:
+            sel.selectionChanged.connect(lambda *_: self.update_status())
+
+    def _calc_dir_size(self, idx: QModelIndex) -> None:
+        if self.archive is not None or self.remote is not None:
+            return
+        idx0 = idx.siblingAtColumn(0)
+        if self.model.isDir(idx0) and self.model.fileName(idx0) != "..":
+            path = self.model.filePath(idx0)
+            self.model.set_dir_size(path, ops.dir_size(Path(path)))
+            self.update_status()
+
+    def _entry_size(self, row_idx: QModelIndex) -> int:
+        if self.archive is not None or self.remote is not None:
+            val = self.arch_model.itemFromIndex(row_idx.siblingAtColumn(1)).data(Qt.UserRole)
+            return val or 0
+        idx0 = row_idx.siblingAtColumn(0)
+        if self.model.isDir(idx0):
+            return self.model.dir_sizes.get(self.model.filePath(idx0), 0)
+        return self.model.size(idx0)
+
+    def update_status(self) -> None:
+        m = self.view.model()
+        root = self.view.rootIndex() if m is self.model else QModelIndex()
+        total_items = 0
+        total_bytes = 0
+        for r in range(m.rowCount(root)):
+            idx = m.index(r, 0, root)
+            if idx.data() == "..":
+                continue
+            total_items += 1
+            total_bytes += self._entry_size(idx)
+        sel_rows = [i for i in self.view.selectionModel().selectedRows(0) if i.data() != ".."]
+        sel_bytes = sum(self._entry_size(i) for i in sel_rows)
+        self.status_bar.setText(
+            f"{len(sel_rows)} / {total_items} selected "
+            f"({ops.format_size(sel_bytes)} / {ops.format_size(total_bytes)})"
+        )
 
     def go_up(self) -> None:
         if self.remote is not None:
@@ -237,6 +319,10 @@ class FilePanel(QWidget):
     @property
     def path_bar(self) -> QLineEdit:
         return self._tab.path_bar
+
+    @property
+    def status_bar(self) -> QLabel:
+        return self._tab.status_bar
 
     def new_tab(self, path: str | None = None) -> None:
         path = path or self.current_path()

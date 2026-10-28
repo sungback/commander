@@ -44,7 +44,9 @@ def read_entries(path: Path) -> list[Entry]:
 def children(entries: Iterable[Entry], inner: str = "") -> list[Entry]:
     """Immediate children of `inner` (directories first, then by name); implicit dirs included."""
     prefix = inner + "/" if inner else ""
-    found: dict[str, Entry] = {}
+    dirs: set[str] = set()
+    files: dict[str, int] = {}
+    dir_sizes: dict[str, int] = {}
     for e in entries:
         if not e.path.startswith(prefix) or e.path == inner:
             continue
@@ -52,11 +54,15 @@ def children(entries: Iterable[Entry], inner: str = "") -> list[Entry]:
         name, sep, _ = rest.partition("/")
         if name in {"", ".", ".."}:
             continue
-        if sep:
-            found[name] = Entry(prefix + name, True)
-        elif name not in found:
-            found[name] = Entry(e.path, e.is_dir, e.size)
-    return sorted(found.values(), key=lambda e: (not e.is_dir, e.path.rsplit("/", 1)[-1].lower()))
+        if sep or e.is_dir:
+            dirs.add(name)
+            if not e.is_dir:
+                dir_sizes[name] = dir_sizes.get(name, 0) + e.size
+        elif name not in dirs and name not in files:
+            files[name] = e.size
+    out = [Entry(prefix + d, True, dir_sizes.get(d, 0)) for d in dirs]
+    out += [Entry(prefix + f, False, s) for f, s in files.items() if f not in dirs]
+    return sorted(out, key=lambda e: (not e.is_dir, e.path.rsplit("/", 1)[-1].lower()))
 
 
 def _safe_rel(path: str) -> str:

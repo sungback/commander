@@ -66,3 +66,32 @@ def make_dir(parent: Path, name: str) -> Path:
     path = Path(parent) / name
     path.mkdir()
     return path
+
+
+def dir_size(path: Path) -> int:
+    """Total byte size of regular files under `path` (does not follow symlinks)."""
+    total = 0
+    stack = [Path(path)]
+    while stack:
+        cur = stack.pop()
+        try:
+            for e in cur.iterdir():
+                if e.is_symlink():
+                    continue
+                if e.is_dir():
+                    stack.append(e)
+                elif e.is_file():
+                    total += e.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def format_size(n: int) -> str:
+    """Human-readable byte size (e.g. '512 B', '1.5 KB', '3.2 MB')."""
+    val = float(n)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if val < 1024 or unit == "TB":
+            return f"{int(val)} B" if unit == "B" else f"{val:.1f} {unit}"
+        val /= 1024
+    return f"{n} B"

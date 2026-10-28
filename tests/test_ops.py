@@ -72,3 +72,13 @@ def test_make_dir(tmp_path):
             ops.make_dir(tmp_path, bad)
     with pytest.raises(FileExistsError):
         ops.make_dir(tmp_path, "new")
+
+
+def test_dir_size_and_format(tree):
+    src, _ = tree
+    (src / "link").symlink_to(src / "d")  # symlinks must not be double-counted
+    assert ops.dir_size(src) == 2
+    assert ops.format_size(0) == "0 B"
+    assert ops.format_size(512) == "512 B"
+    assert ops.format_size(1536) == "1.5 KB"
+    assert ops.format_size(1024 * 1024) == "1.0 MB"

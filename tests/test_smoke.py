@@ -135,13 +135,23 @@ def test_keyboard_navigation(tmp_path):
     assert panel.current_path() == str(tmp_path)
 
     _wait(lambda: "x.txt" in _names(panel))
+    (sub / "inner.txt").write_bytes(b"abcd")
+    panel.view.setCurrentIndex(row("sub"))
+    panel.view.clearSelection()
+    QTest.keyClick(panel.view, Qt.Key_Space)
+    sub_size_idx = panel.model.index(row("sub").row(), 1, panel.view.rootIndex())
+    assert sub_size_idx.data() == "4 B"
+    assert "1 / 2 selected (4 B / 5 B)" == panel.status_bar.text()
+
     panel.view.setCurrentIndex(row("x.txt"))
     panel.view.clearSelection()  # setCurrentIndex selects the row itself
     QTest.keyClick(panel.view, Qt.Key_Space)
     assert [p.name for p in panel.selected_paths()] == ["x.txt"]
+    assert "1 / 2 selected (1 B / 5 B)" == panel.status_bar.text()
     panel.view.setCurrentIndex(row("x.txt"))
     QTest.keyClick(panel.view, Qt.Key_Space)
     assert panel.selected_paths() == []
+    assert "0 / 2 selected (0 B / 5 B)" == panel.status_bar.text()
     app.processEvents()
 
 
