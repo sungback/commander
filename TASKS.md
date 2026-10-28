@@ -24,6 +24,8 @@
 - [x] SFTP (remote.py SftpClient: paramiko, FtpClient와 같은 메서드. Ctrl+N에 `sftp://[user[:pw]@]host[:port][/path]`, 패널 로직 공유)
 - [x] macOS 패키징 (packaging/build_mac.sh + launcher.py: PyInstaller로 Commander.app, .zip, .dmg 생성)
 - [x] 폴더 용량 및 하단 상태줄 (DirSizeWorker로 백그라운드 자동 폴더 용량 계산·Size 표시, 압축 내부 폴더 용량 합산 표시, 패널 하단에 선택/전체 개수·용량 표시)
+- [x] `..` 상위 폴더 항상 최상단 고정 (`_SortProxy`) 및 앱 이름(`commander`)·전용 아이콘 적용
+- [x] 하네스 엔지니어링 구축 (`CLAUDE.md` 불변식 명문화, `scripts/check.sh`, `scripts/run.sh`, `.git/hooks/pre-commit`)
 
 ## 결정 / 메모
 - FTP: 평문(FTPS 미지원), 이동·삭제·폴더 생성·검색·이름 변경은 원격에서 거부, 원격↔원격 전송 불가, 연결은 UI 스레드에서 수행(최대 15초 블록), 취소는 파일 사이에서만 반영
