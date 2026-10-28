@@ -275,7 +275,7 @@ class MainWindow(QMainWindow):
 def _set_macos_app_name(name: str) -> None:
     if sys.platform != "darwin":
         return
-    with suppress(OSError, AttributeError):
+    with suppress(OSError, AttributeError, ValueError):
         cf = ctypes.cdll.LoadLibrary(util.find_library("CoreFoundation") or "")
         cf.CFBundleGetMainBundle.restype = ctypes.c_void_p
         cf.CFBundleGetInfoDictionary.argtypes = [ctypes.c_void_p]
@@ -283,13 +283,23 @@ def _set_macos_app_name(name: str) -> None:
         cf.CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
         cf.CFStringCreateWithCString.restype = ctypes.c_void_p
         cf.CFDictionarySetValue.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
-        info = cf.CFBundleGetInfoDictionary(cf.CFBundleGetMainBundle())
-        if not info:
-            return
         utf8 = 0x08000100
         val = cf.CFStringCreateWithCString(None, name.encode("utf-8"), utf8)
-        for key in (b"CFBundleName", b"CFBundleDisplayName"):
-            cf.CFDictionarySetValue(info, cf.CFStringCreateWithCString(None, key, utf8), val)
+        info = cf.CFBundleGetInfoDictionary(cf.CFBundleGetMainBundle())
+        if info:
+            for key in (b"CFBundleName", b"CFBundleDisplayName"):
+                cf.CFDictionarySetValue(info, cf.CFStringCreateWithCString(None, key, utf8), val)
+        ls = ctypes.cdll.LoadLibrary(util.find_library("ApplicationServices") or "")
+        ls._LSGetCurrentApplicationASN.argtypes = []
+        ls._LSGetCurrentApplicationASN.restype = ctypes.c_void_p
+        ls._LSSetApplicationInformationItem.argtypes = [
+            ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p
+        ]
+        ls._LSSetApplicationInformationItem.restype = ctypes.c_int32
+        asn = ls._LSGetCurrentApplicationASN()
+        if asn:
+            key = ctypes.c_void_p.in_dll(ls, "_kLSDisplayNameKey")
+            ls._LSSetApplicationInformationItem(-2, asn, key, val, None)
 
 
 def app_icon(size: int = 256) -> QIcon:
@@ -358,4 +368,5 @@ def main() -> int:
     app.setWindowIcon(app_icon())
     win = MainWindow()
     win.show()
+    _set_macos_app_name("commander")
     return app.exec()
