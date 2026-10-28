@@ -1,11 +1,12 @@
 import ctypes
+import json
 import sys
 from contextlib import suppress
 from ctypes import util
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QByteArray, QRectF, Qt
 from PySide6.QtGui import (
     QColor,
     QIcon,
@@ -34,20 +35,23 @@ from .search_dialog import SearchDialog
 from .viewer import ViewerDialog
 from .workers import Worker
 
+STATE_FILE = Path.home() / ".config" / "commander" / "state.json"
+
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, state_file: Path | None = None):
         super().__init__()
         self.setWindowTitle("commander")
         self.setWindowIcon(app_icon())
         self.resize(1100, 650)
         self._worker: Worker | None = None
+        self._state_file = state_file
         home = str(Path.home())
         self.panels = [FilePanel(home), FilePanel(home)]
-        splitter = QSplitter()
+        self.splitter = QSplitter()
         for p in self.panels:
-            splitter.addWidget(p)
-        self.setCentralWidget(splitter)
+            self.splitter.addWidget(p)
+        self.setCentralWidget(self.splitter)
         QShortcut(QKeySequence("Tab"), self, activated=self.switch_panel)
         QShortcut(QKeySequence("Ctrl+T"), self, activated=lambda: self.panels[self.active_index()].new_tab())
         QShortcut(QKeySequence("Ctrl+W"), self, activated=lambda: self.panels[self.active_index()].close_tab())
@@ -61,6 +65,50 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("F7"), self, activated=self.make_dir)
         QShortcut(QKeySequence("F8"), self, activated=self.delete)
         self.panels[0].view.setFocus()
+        if self._state_file is not None:
+            self.load_state(self._state_file)
+
+    def save_state(self, path: Path | None = None) -> None:
+        target = path or self._state_file
+        if target is None:
+            return
+        data = {
+            "geometry": bytes(self.saveGeometry().toHex()).decode("ascii"),
+            "size": [self.width(), self.height()],
+            "splitter": self.splitter.sizes(),
+            "active_panel": self.active_index(),
+            "panels": [p.to_state() for p in self.panels],
+        }
+        with suppress(OSError):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    def load_state(self, path: Path | None = None) -> None:
+        target = path or self._state_file
+        if target is None or not target.is_file():
+            return
+        with suppress(OSError, ValueError, TypeError, KeyError):
+            data = json.loads(target.read_text(encoding="utf-8"))
+            geom = data.get("geometry")
+            if isinstance(geom, str) and geom:
+                self.restoreGeometry(QByteArray.fromHex(geom.encode("ascii")))
+            sz = data.get("size")
+            if isinstance(sz, list) and len(sz) == 2 and all(isinstance(x, int) and x > 100 for x in sz):
+                self.resize(sz[0], sz[1])
+            panels = data.get("panels") or []
+            for p, ps in zip(self.panels, panels, strict=False):
+                if isinstance(ps, dict):
+                    p.restore_state(ps)
+            sizes = data.get("splitter")
+            if isinstance(sizes, list) and len(sizes) == 2 and all(isinstance(x, int) and x > 0 for x in sizes):
+                self.splitter.setSizes(sizes)
+            active = int(data.get("active_panel", 0))
+            if active in (0, 1):
+                self.panels[active].view.setFocus()
+
+    def closeEvent(self, event) -> None:
+        self.save_state()
+        super().closeEvent(event)
 
     def active_index(self) -> int:
         return 1 if self.panels[1].view.hasFocus() else 0
@@ -366,7 +414,8 @@ def main() -> int:
     app.setApplicationName("commander")
     app.setApplicationDisplayName("commander")
     app.setWindowIcon(app_icon())
-    win = MainWindow()
+    win = MainWindow(state_file=STATE_FILE)
+    app.aboutToQuit.connect(win.save_state)
     win.show()
     _set_macos_app_name("commander")
     return app.exec()

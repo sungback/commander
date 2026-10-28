@@ -93,11 +93,14 @@ class _SortProxy(QSortFilterProxyModel):
         r_dir = src.isDir(r0)
         if l_dir != r_dir:
             return l_dir if asc else r_dir
-        if left.column() == 1:
+        col = left.column()
+        if col == 1:
             l_sz = src.dir_sizes.get(src.filePath(l0), -1) if l_dir else src.size(l0)
             r_sz = src.dir_sizes.get(src.filePath(r0), -1) if r_dir else src.size(r0)
             if l_sz != r_sz:
                 return l_sz < r_sz
+        elif col in (2, 3):
+            return super().lessThan(left, right)
         return l_name.lower() < r_name.lower()
 
 
@@ -145,6 +148,8 @@ class _Tab(QWidget):
         self.remote_path = "/"
         self.local_dir = path  # last local folder, kept while browsing a remote
         self._size_worker: DirSizeWorker | None = None
+        self._pending_cur: str | None = None
+        self._pending_sel: set[str] = set()
 
         self.view = _View(self)
         self.view.setModel(self.model)
@@ -187,6 +192,8 @@ class _Tab(QWidget):
             return
         idx = self.model.index(path)
         if self.model.isDir(idx):
+            self._pending_cur = None
+            self._pending_sel.clear()
             self._leave_archive()
             self.view.setRootIndex(idx)
             self.local_dir = self.model.filePath(idx)
@@ -245,10 +252,12 @@ class _Tab(QWidget):
         if self.archive is None and self.view.model() is self.model:
             return
         self.archive = None
+        hdr = self.view.header()
+        col, order = hdr.sortIndicatorSection(), hdr.sortIndicatorOrder()
         self.view.setModel(self.model)
         self._bind_selection()
         self.view.setSortingEnabled(True)
-        self.view.sortByColumn(0, self.view.header().sortIndicatorOrder())
+        self.view.sortByColumn(col, order)
         self.view.setColumnWidth(0, 260)
 
     def _bind_selection(self) -> None:
@@ -257,6 +266,7 @@ class _Tab(QWidget):
             sel.selectionChanged.connect(lambda *_: self.update_status())
 
     def _on_rows_changed(self, parent: QModelIndex, first: int, last: int) -> None:
+        self._apply_pending_selection()
         self.update_status()
         if parent == self.view.rootIndex():
             for r in range(first, last + 1):
@@ -265,6 +275,62 @@ class _Tab(QWidget):
                     if self._size_worker is None or not self._size_worker.isRunning():
                         self._scan_dir_sizes()
                     break
+
+    def _apply_pending_selection(self) -> None:
+        if not self._pending_cur and not self._pending_sel:
+            return
+        m = self.view.model()
+        root = self.view.rootIndex() if m is self.model else QModelIndex()
+        sel_model = self.view.selectionModel()
+        flags = QItemSelectionModel.Select | QItemSelectionModel.Rows
+        for r in range(m.rowCount(root)):
+            idx = m.index(r, 0, root)
+            name = idx.data()
+            if name in self._pending_sel:
+                sel_model.select(idx, flags)
+                self._pending_sel.discard(name)
+            if self._pending_cur and name == self._pending_cur:
+                sel_model.setCurrentIndex(idx, QItemSelectionModel.NoUpdate)
+                self._pending_cur = None
+
+    def to_state(self) -> dict:
+        hdr = self.view.header()
+        cur = self.view.currentIndex()
+        cur_name = cur.siblingAtColumn(0).data() if cur.isValid() else ""
+        if self.in_archive:
+            sel_names = [s.rsplit("/", 1)[-1] for s in self.archive_selection()]
+        else:
+            sel_names = [p.name for p in self.selected_paths()]
+        return {
+            "path": self.local_dir,
+            "archive": str(self.archive) if self.archive else "",
+            "inner": self.inner if self.archive else "",
+            "sort_col": hdr.sortIndicatorSection(),
+            "sort_order": hdr.sortIndicatorOrder().value,
+            "current": cur_name or "",
+            "selected": sel_names,
+        }
+
+    def restore_state(self, state: dict) -> None:
+        path = state.get("path", "")
+        if path and Path(path).is_dir():
+            self.set_path(path)
+        arc = state.get("archive", "")
+        if arc and archive.is_archive(Path(arc)):
+            try:
+                self.open_archive(Path(arc), state.get("inner", ""))
+            except (OSError, ValueError):
+                pass
+        col = int(state.get("sort_col", 0))
+        order = Qt.DescendingOrder if state.get("sort_order", 0) == 1 else Qt.AscendingOrder
+        if not self.in_archive and not self.in_remote:
+            self.view.sortByColumn(col, order)
+        else:
+            self.view.header().setSortIndicator(col, order)
+        self._pending_cur = state.get("current") or None
+        self._pending_sel = set(state.get("selected") or [])
+        self._apply_pending_selection()
+        self.update_status()
 
     def _stop_size_worker(self) -> None:
         if self._size_worker is not None:
@@ -413,11 +479,36 @@ class FilePanel(QWidget):
         return self._tab.status_bar
 
     def new_tab(self, path: str | None = None) -> None:
-        path = path or self.current_path()
+        prev = self._tab if self.tabs.count() else None
+        path = path or (prev.current_path() if prev else str(Path.home()))
         tab = _Tab(path)
+        if prev is not None:
+            hdr = prev.view.header()
+            tab.view.sortByColumn(hdr.sortIndicatorSection(), hdr.sortIndicatorOrder())
         tab.path_changed = lambda p, t=tab: self.tabs.setTabText(self.tabs.indexOf(t), _title(p))
         self.tabs.setCurrentIndex(self.tabs.addTab(tab, _title(path)))
         tab.view.setFocus()
+
+    def to_state(self) -> dict:
+        return {
+            "active": self.tabs.currentIndex(),
+            "tabs": [self.tabs.widget(i).to_state() for i in range(self.tabs.count())],
+        }
+
+    def restore_state(self, state: dict) -> None:
+        tabs = state.get("tabs") or []
+        if not tabs:
+            return
+        for i, ts in enumerate(tabs):
+            if i == 0:
+                self.tabs.widget(0).restore_state(ts)
+            else:
+                path = ts.get("path", "")
+                self.new_tab(path if path and Path(path).is_dir() else None)
+                self.tabs.widget(self.tabs.count() - 1).restore_state(ts)
+        active = int(state.get("active", 0))
+        if 0 <= active < self.tabs.count():
+            self.tabs.setCurrentIndex(active)
 
     def close_tab(self, index: int | None = None) -> None:
         if self.tabs.count() <= 1:

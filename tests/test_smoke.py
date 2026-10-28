@@ -301,3 +301,54 @@ def test_ftp_browse_download_upload(tmp_path, monkeypatch):
         stop.set()
         t.join(timeout=2)
         srv.close_all()
+
+
+def test_session_state_persisted_across_restarts(tmp_path):
+    from PySide6.QtCore import QItemSelectionModel, Qt
+
+    app = QApplication.instance() or QApplication([])
+    a, b, c = tmp_path / "a", tmp_path / "b", tmp_path / "c"
+    for d in (a, b, c):
+        d.mkdir()
+    (a / "small.txt").write_bytes(b"1")
+    (a / "large.txt").write_bytes(b"12345")
+    state_file = tmp_path / "state.json"
+
+    win1 = MainWindow(state_file=state_file)
+    win1.resize(960, 540)
+    win1.splitter.setSizes([350, 610])
+    p0 = win1.panels[0]
+    p0.set_path(str(a))
+    _wait(lambda: {"small.txt", "large.txt"} <= _names(p0))
+    p0.view.sortByColumn(1, Qt.DescendingOrder)  # Size descending
+    idx_large = p0.model.index(str(a / "large.txt"))
+    idx_small = p0.model.index(str(a / "small.txt"))
+    flags = QItemSelectionModel.Select | QItemSelectionModel.Rows
+    p0.view.selectionModel().select(idx_small, flags)
+    p0.view.selectionModel().setCurrentIndex(idx_large, QItemSelectionModel.NoUpdate)
+
+    p0.new_tab(str(b))
+    p0.tabs.setCurrentIndex(0)  # keep tab 0 active
+    win1.panels[1].set_path(str(c))
+    win1.close()
+
+    assert state_file.is_file()
+    win2 = MainWindow(state_file=state_file)
+    r0 = win2.panels[0]
+    assert win2.size().width() == 960 and win2.size().height() == 540
+    assert r0.tabs.count() == 2
+    assert r0.tabs.currentIndex() == 0
+    assert r0.current_path() == str(a)
+    assert win2.panels[1].current_path() == str(c)
+    hdr = r0.view.header()
+    assert hdr.sortIndicatorSection() == 1
+    assert hdr.sortIndicatorOrder() == Qt.DescendingOrder
+
+    _wait(lambda: {"small.txt", "large.txt"} <= _names(r0))
+    root = r0.view.rootIndex()
+    assert [r0.model.index(r, 0, root).data() for r in range(r0.model.rowCount(root))] == [
+        "..", "large.txt", "small.txt"
+    ]
+    assert [p.name for p in r0.selected_paths()] == ["small.txt"]
+    assert r0.view.currentIndex().siblingAtColumn(0).data() == "large.txt"
+    app.processEvents()
