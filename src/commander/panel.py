@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 
 from . import archive, ops
 from .remote import FtpClient, SftpClient
+from .workers import DirSizeWorker
 
 
 class _LocalModel(QFileSystemModel):
@@ -54,8 +55,6 @@ class _View(QTreeView):
         elif key == Qt.Key_Backspace:
             self._tab.go_up()
         elif key in (Qt.Key_Space, Qt.Key_Insert) and cur.isValid():
-            if key == Qt.Key_Space:
-                self._tab._calc_dir_size(cur)
             self.selectionModel().select(
                 cur, QItemSelectionModel.Toggle | QItemSelectionModel.Rows)
             below = self.indexBelow(cur)
@@ -83,6 +82,7 @@ class _Tab(QWidget):
         self.remote: FtpClient | SftpClient | None = None  # set while browsing an FTP server
         self.remote_path = "/"
         self.local_dir = path  # last local folder, kept while browsing a remote
+        self._size_worker: DirSizeWorker | None = None
 
         self.view = _View(self)
         self.view.setModel(self.model)
@@ -95,9 +95,9 @@ class _Tab(QWidget):
         self.view.doubleClicked.connect(self._open)
 
         self.status_bar = QLabel()
-        self.model.directoryLoaded.connect(lambda _: self.update_status())
-        self.model.rowsInserted.connect(lambda *_: self.update_status())
-        self.model.rowsRemoved.connect(lambda *_: self.update_status())
+        self.model.directoryLoaded.connect(lambda _: (self._scan_dir_sizes(), self.update_status()))
+        self.model.rowsInserted.connect(lambda *_: (self._scan_dir_sizes(), self.update_status()))
+        self.model.rowsRemoved.connect(lambda *_: (self._scan_dir_sizes(), self.update_status()))
         self._bind_selection()
         self.update_status()
 
@@ -129,6 +129,7 @@ class _Tab(QWidget):
             self.local_dir = self.model.filePath(idx)
             self.model.setRootPath(self.local_dir)
             self.path_bar.setText(self.local_dir)
+            self._scan_dir_sizes()
             self.update_status()
             if self.path_changed:
                 self.path_changed(self.model.filePath(idx))
@@ -154,6 +155,7 @@ class _Tab(QWidget):
 
     def _show_rows(self, rows: list[tuple[str, bool, int]], bar: str, title: str,
                    show_dir_size: bool = False) -> None:
+        self._stop_size_worker()
         m = self.arch_model
         m.clear()
         m.setHorizontalHeaderLabels(["Name", "Size"])
@@ -191,14 +193,24 @@ class _Tab(QWidget):
         if sel is not None:
             sel.selectionChanged.connect(lambda *_: self.update_status())
 
-    def _calc_dir_size(self, idx: QModelIndex) -> None:
+    def _stop_size_worker(self) -> None:
+        if self._size_worker is not None:
+            w = self._size_worker
+            self._size_worker = None
+            w.cancel()
+            try:
+                w.sized.disconnect()
+            except RuntimeError:
+                pass
+
+    def _scan_dir_sizes(self) -> None:
         if self.archive is not None or self.remote is not None:
             return
-        idx0 = idx.siblingAtColumn(0)
-        if self.model.isDir(idx0) and self.model.fileName(idx0) != "..":
-            path = self.model.filePath(idx0)
-            self.model.set_dir_size(path, ops.dir_size(Path(path)))
-            self.update_status()
+        self._stop_size_worker()
+        worker = DirSizeWorker(Path(self.local_dir))
+        worker.sized.connect(lambda p, s: (self.model.set_dir_size(p, s), self.update_status()))
+        self._size_worker = worker
+        worker.start()
 
     def _entry_size(self, row_idx: QModelIndex) -> int:
         if self.archive is not None or self.remote is not None:
@@ -336,6 +348,7 @@ class FilePanel(QWidget):
             return  # keep at least one tab
         index = self.tabs.currentIndex() if index is None else index
         tab = self.tabs.widget(index)
+        tab._stop_size_worker()
         if tab.remote is not None:
             tab.remote.close()
         tab.deleteLater()

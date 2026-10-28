@@ -1,10 +1,11 @@
 """Background execution of ops functions with progress and cancel."""
+import atexit
 from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
-from . import search
+from . import ops, search
 
 Task = Callable[[Callable[[Path], None]], None]
 
@@ -62,3 +63,49 @@ class SearchWorker(QThread):
             self.found.emit(str(path))
             count += 1
         self.truncated = count >= self.LIMIT
+
+
+_size_workers: set["DirSizeWorker"] = set()
+
+
+class DirSizeWorker(QThread):
+    sized = Signal(str, object)  # path, int bytes (object avoids 32-bit C++ int overflow)
+
+    def __init__(self, root: Path, parent=None):
+        super().__init__(parent)
+        self._root = Path(root)
+        self._cancel = False
+        _size_workers.add(self)
+        self.finished.connect(self._cleanup)
+
+    def _cleanup(self) -> None:
+        _size_workers.discard(self)
+
+    @classmethod
+    def stop_all(cls) -> None:
+        for w in list(_size_workers):
+            w.cancel()
+            w.wait(2000)
+        _size_workers.clear()
+
+    def cancel(self) -> None:
+        self._cancel = True
+
+    def run(self) -> None:
+        try:
+            entries = sorted(self._root.iterdir(), key=lambda p: p.name.lower())
+        except OSError:
+            return
+        for e in entries:
+            if self._cancel:
+                return
+            try:
+                if e.is_dir() and not e.is_symlink():
+                    size = ops.dir_size(e, lambda: self._cancel)
+                    if not self._cancel:
+                        self.sized.emit(str(e), size)
+            except OSError:
+                continue
+
+
+atexit.register(DirSizeWorker.stop_all)

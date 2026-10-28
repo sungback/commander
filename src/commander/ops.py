@@ -68,14 +68,18 @@ def make_dir(parent: Path, name: str) -> Path:
     return path
 
 
-def dir_size(path: Path) -> int:
+def dir_size(path: Path, cancel: Callable[[], bool] | None = None) -> int:
     """Total byte size of regular files under `path` (does not follow symlinks)."""
     total = 0
     stack = [Path(path)]
     while stack:
+        if cancel and cancel():
+            return total
         cur = stack.pop()
         try:
             for e in cur.iterdir():
+                if cancel and cancel():
+                    return total
                 if e.is_symlink():
                     continue
                 if e.is_dir():

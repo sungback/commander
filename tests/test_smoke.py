@@ -118,15 +118,20 @@ def test_keyboard_navigation(tmp_path):
     app = QApplication.instance() or QApplication([])
     sub = tmp_path / "sub"
     sub.mkdir()
+    (sub / "inner.txt").write_bytes(b"abcd")
     (tmp_path / "x.txt").write_text("x")
     panel = MainWindow().panels[0]
     panel.set_path(str(tmp_path))
-    _wait(lambda: "sub" in _names(panel))
+    _wait(lambda: {"sub", "x.txt"} <= _names(panel))
 
     def row(name):
         root = panel.view.rootIndex()
         return next(panel.model.index(r, 0, root) for r in range(panel.model.rowCount(root))
                     if panel.model.fileName(panel.model.index(r, 0, root)) == name)
+
+    # Background DirSizeWorker automatically populates folder size without pressing Space
+    _wait(lambda: panel.model.index(row("sub").row(), 1, panel.view.rootIndex()).data() == "4 B")
+    assert "0 / 2 selected (0 B / 5 B)" == panel.status_bar.text()
 
     panel.view.setCurrentIndex(row("sub"))
     QTest.keyClick(panel.view, Qt.Key_Return)
@@ -134,15 +139,8 @@ def test_keyboard_navigation(tmp_path):
     QTest.keyClick(panel.view, Qt.Key_Backspace)
     assert panel.current_path() == str(tmp_path)
 
-    _wait(lambda: "x.txt" in _names(panel))
-    (sub / "inner.txt").write_bytes(b"abcd")
-    panel.view.setCurrentIndex(row("sub"))
-    panel.view.clearSelection()
-    QTest.keyClick(panel.view, Qt.Key_Space)
-    sub_size_idx = panel.model.index(row("sub").row(), 1, panel.view.rootIndex())
-    assert sub_size_idx.data() == "4 B"
-    assert "1 / 2 selected (4 B / 5 B)" == panel.status_bar.text()
-
+    _wait(lambda: {"sub", "x.txt"} <= _names(panel))
+    _wait(lambda: panel.model.index(row("sub").row(), 1, panel.view.rootIndex()).data() == "4 B")
     panel.view.setCurrentIndex(row("x.txt"))
     panel.view.clearSelection()  # setCurrentIndex selects the row itself
     QTest.keyClick(panel.view, Qt.Key_Space)
