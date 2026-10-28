@@ -12,6 +12,8 @@ def test_window_has_two_panels(tmp_path):
     win = MainWindow()
     win.panels[0].set_path(str(tmp_path))
     assert len(win.panels) == 2
+    assert win.windowTitle() == "commander"
+    assert not win.windowIcon().isNull()
     assert win.panels[0].current_path() == str(tmp_path)
     app.processEvents()
 

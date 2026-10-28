@@ -1,9 +1,22 @@
+import ctypes
 import sys
+from contextlib import suppress
+from ctypes import util
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtCore import QRectF, Qt
+from PySide6.QtGui import (
+    QColor,
+    QIcon,
+    QKeySequence,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QInputDialog,
@@ -25,7 +38,8 @@ from .workers import Worker
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Commander")
+        self.setWindowTitle("commander")
+        self.setWindowIcon(app_icon())
         self.resize(1100, 650)
         self._worker: Worker | None = None
         home = str(Path.home())
@@ -258,8 +272,90 @@ class MainWindow(QMainWindow):
         self._run_task("Delete", len(paths), lambda progress: ops.delete(paths, progress=progress))
 
 
+def _set_macos_app_name(name: str) -> None:
+    if sys.platform != "darwin":
+        return
+    with suppress(OSError, AttributeError):
+        cf = ctypes.cdll.LoadLibrary(util.find_library("CoreFoundation") or "")
+        cf.CFBundleGetMainBundle.restype = ctypes.c_void_p
+        cf.CFBundleGetInfoDictionary.argtypes = [ctypes.c_void_p]
+        cf.CFBundleGetInfoDictionary.restype = ctypes.c_void_p
+        cf.CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
+        cf.CFStringCreateWithCString.restype = ctypes.c_void_p
+        cf.CFDictionarySetValue.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+        info = cf.CFBundleGetInfoDictionary(cf.CFBundleGetMainBundle())
+        if not info:
+            return
+        utf8 = 0x08000100
+        val = cf.CFStringCreateWithCString(None, name.encode("utf-8"), utf8)
+        for key in (b"CFBundleName", b"CFBundleDisplayName"):
+            cf.CFDictionarySetValue(info, cf.CFStringCreateWithCString(None, key, utf8), val)
+
+
+def app_icon(size: int = 256) -> QIcon:
+    """Dual-pane file manager icon in macOS squircle style."""
+    px = QPixmap(size, size)
+    px.fill(Qt.transparent)
+    p = QPainter(px)
+    p.setRenderHint(QPainter.Antialiasing)
+    s = float(size)
+
+    # Outer squircle background (deep slate-blue gradient)
+    bg = QLinearGradient(0, 0, 0, s)
+    bg.setColorAt(0.0, QColor("#2563EB"))
+    bg.setColorAt(1.0, QColor("#1E3A8A"))
+    p.setPen(Qt.NoPen)
+    p.setBrush(bg)
+    pad = s * 0.06
+    p.drawRoundedRect(QRectF(pad, pad, s - 2 * pad, s - 2 * pad), s * 0.22, s * 0.22)
+
+    # Folder tab on top-left
+    folder = QLinearGradient(0, s * 0.16, 0, s * 0.84)
+    folder.setColorAt(0.0, QColor("#60A5FA"))
+    folder.setColorAt(1.0, QColor("#3B82F6"))
+    p.setBrush(folder)
+    tab_path = QPainterPath()
+    tab_path.addRoundedRect(QRectF(s * 0.14, s * 0.16, s * 0.30, s * 0.12), s * 0.04, s * 0.04)
+    p.drawPath(tab_path)
+
+    # Inner dual-panel window frame
+    p.setBrush(QColor("#0F172A"))
+    p.drawRoundedRect(QRectF(s * 0.14, s * 0.23, s * 0.72, s * 0.61), s * 0.07, s * 0.07)
+
+    # Left & right panels
+    for x in (s * 0.18, s * 0.51):
+        p.setBrush(QColor("#F8FAFC"))
+        p.drawRoundedRect(QRectF(x, s * 0.28, s * 0.31, s * 0.51), s * 0.04, s * 0.04)
+        # Header bar inside each pane
+        p.setBrush(QColor("#3B82F6"))
+        p.drawRoundedRect(QRectF(x + s * 0.025, s * 0.31, s * 0.26, s * 0.045), s * 0.015, s * 0.015)
+        # File rows inside each pane
+        for i, highlight in enumerate((True, False, False, False)):
+            ry = s * (0.39 + i * 0.085)
+            p.setBrush(QColor("#93C5FD") if highlight else QColor("#CBD5E1"))
+            p.drawRoundedRect(QRectF(x + s * 0.025, ry, s * 0.26, s * 0.05), s * 0.015, s * 0.015)
+
+    # Transfer badge in the center between the two panels
+    p.setBrush(QColor("#F59E0B"))
+    p.setPen(QPen(QColor("#0F172A"), s * 0.02))
+    p.drawEllipse(QRectF(s * 0.415, s * 0.455, s * 0.17, s * 0.17))
+    p.setPen(QPen(QColor("#FFFFFF"), s * 0.024, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.drawLine(QRectF(s * 0.455, s * 0.54, s * 0.09, 0).topLeft(),
+               QRectF(s * 0.455, s * 0.54, s * 0.09, 0).topRight())
+    p.drawLine(QRectF(s * 0.515, s * 0.505, s * 0.03, s * 0.035).topLeft(),
+               QRectF(s * 0.515, s * 0.505, s * 0.03, s * 0.035).bottomRight())
+    p.drawLine(QRectF(s * 0.515, s * 0.54, s * 0.03, s * 0.035).bottomLeft(),
+               QRectF(s * 0.515, s * 0.54, s * 0.03, s * 0.035).topRight())
+    p.end()
+    return QIcon(px)
+
+
 def main() -> int:
+    _set_macos_app_name("commander")
     app = QApplication(sys.argv)
+    app.setApplicationName("commander")
+    app.setApplicationDisplayName("commander")
+    app.setWindowIcon(app_icon())
     win = MainWindow()
     win.show()
     return app.exec()
