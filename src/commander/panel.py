@@ -95,10 +95,11 @@ class _Tab(QWidget):
         self.view.doubleClicked.connect(self._open)
 
         self.status_bar = QLabel()
-        self.model.directoryLoaded.connect(lambda _: (self._scan_dir_sizes(), self.update_status()))
-        self.model.rowsInserted.connect(lambda *_: (self._scan_dir_sizes(), self.update_status()))
-        self.model.rowsRemoved.connect(lambda *_: (self._scan_dir_sizes(), self.update_status()))
+        self.model.directoryLoaded.connect(lambda _: self.update_status())
+        self.model.rowsInserted.connect(self._on_rows_changed)
+        self.model.rowsRemoved.connect(self._on_rows_changed)
         self._bind_selection()
+        self._scan_dir_sizes()
         self.update_status()
 
         layout = QVBoxLayout(self)
@@ -192,6 +193,16 @@ class _Tab(QWidget):
         sel = self.view.selectionModel()
         if sel is not None:
             sel.selectionChanged.connect(lambda *_: self.update_status())
+
+    def _on_rows_changed(self, parent: QModelIndex, first: int, last: int) -> None:
+        self.update_status()
+        if parent == self.view.rootIndex():
+            for r in range(first, last + 1):
+                idx = self.model.index(r, 0, parent)
+                if self.model.isDir(idx) and self.model.filePath(idx) not in self.model.dir_sizes:
+                    if self._size_worker is None or not self._size_worker.isRunning():
+                        self._scan_dir_sizes()
+                    break
 
     def _stop_size_worker(self) -> None:
         if self._size_worker is not None:

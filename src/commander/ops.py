@@ -1,5 +1,7 @@
 """UI-independent file operations."""
+import os
 import shutil
+import time
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
@@ -68,27 +70,39 @@ def make_dir(parent: Path, name: str) -> Path:
     return path
 
 
-def dir_size(path: Path, cancel: Callable[[], bool] | None = None) -> int:
-    """Total byte size of regular files under `path` (does not follow symlinks)."""
+def dir_size(path: Path, cancel: Callable[[], bool] | None = None,
+             on_progress: Callable[[int], None] | None = None,
+             max_dirs: int | None = None) -> tuple[int, bool]:
+    """(total_bytes, complete) of regular files under `path` (does not follow symlinks)."""
     total = 0
-    stack = [Path(path)]
+    dirs = 0
+    last = time.monotonic()
+    stack = [os.fspath(path)]
     while stack:
         if cancel and cancel():
-            return total
+            return total, False
+        if max_dirs is not None and dirs >= max_dirs:
+            return total, False
         cur = stack.pop()
+        dirs += 1
         try:
-            for e in cur.iterdir():
-                if cancel and cancel():
-                    return total
-                if e.is_symlink():
-                    continue
-                if e.is_dir():
-                    stack.append(e)
-                elif e.is_file():
-                    total += e.stat().st_size
+            with os.scandir(cur) as it:
+                for e in it:
+                    if cancel and cancel():
+                        return total, False
+                    try:
+                        if e.is_dir(follow_symlinks=False):
+                            stack.append(e.path)
+                        elif e.is_file(follow_symlinks=False):
+                            total += e.stat(follow_symlinks=False).st_size
+                            if on_progress and time.monotonic() - last >= 0.15:
+                                last = time.monotonic()
+                                on_progress(total)
+                    except OSError:
+                        continue
         except OSError:
             continue
-    return total
+    return total, True
 
 
 def format_size(n: int) -> str:

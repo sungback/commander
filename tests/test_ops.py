@@ -77,7 +77,7 @@ def test_make_dir(tmp_path):
 def test_dir_size_and_format(tree):
     src, _ = tree
     (src / "link").symlink_to(src / "d")  # symlinks must not be double-counted
-    assert ops.dir_size(src) == 2
+    assert ops.dir_size(src) == (2, True)
     assert ops.format_size(0) == "0 B"
     assert ops.format_size(512) == "512 B"
     assert ops.format_size(1536) == "1.5 KB"

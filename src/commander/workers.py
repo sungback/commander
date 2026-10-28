@@ -93,19 +93,34 @@ class DirSizeWorker(QThread):
 
     def run(self) -> None:
         try:
-            entries = sorted(self._root.iterdir(), key=lambda p: p.name.lower())
+            entries = sorted(
+                (e for e in self._root.iterdir()
+                 if not e.name.startswith(".") and e.is_dir() and not e.is_symlink()),
+                key=lambda p: p.name.lower(),
+            )
         except OSError:
             return
+        deferred: list[Path] = []
         for e in entries:
             if self._cancel:
                 return
-            try:
-                if e.is_dir() and not e.is_symlink():
-                    size = ops.dir_size(e, lambda: self._cancel)
-                    if not self._cancel:
-                        self.sized.emit(str(e), size)
-            except OSError:
-                continue
+            path = str(e)
+            size, done = ops.dir_size(e, cancel=lambda: self._cancel, max_dirs=60)
+            if not self._cancel:
+                self.sized.emit(path, size)
+                if not done:
+                    deferred.append(e)
+        for e in deferred:
+            if self._cancel:
+                return
+            path = str(e)
+            size, _ = ops.dir_size(
+                e,
+                cancel=lambda: self._cancel,
+                on_progress=lambda s, p=path: self.sized.emit(p, s) if not self._cancel else None,
+            )
+            if not self._cancel:
+                self.sized.emit(path, size)
 
 
 atexit.register(DirSizeWorker.stop_all)
