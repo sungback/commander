@@ -7,14 +7,25 @@ from PySide6.QtWidgets import QApplication
 from commander.app import MainWindow
 
 
-def test_window_has_two_panels(tmp_path):
+def test_window_has_two_panels(tmp_path, monkeypatch):
+    from commander import panel as panel_mod
+
     app = QApplication.instance() or QApplication([])
+    d1, d2 = tmp_path / "d1", tmp_path / "d2"
+    d1.mkdir()
+    d2.mkdir()
+    monkeypatch.setattr(panel_mod, "list_drives", lambda: [str(d1), str(d2)])
     win = MainWindow()
-    win.panels[0].set_path(str(tmp_path))
+    win.panels[0].set_path(str(d1))
     assert len(win.panels) == 2
     assert win.windowTitle() == "commander"
     assert not win.windowIcon().isNull()
-    assert win.panels[0].current_path() == str(tmp_path)
+    assert win.panels[0].current_path() == str(d1)
+    # Selecting another drive from the QComboBox switches the panel path
+    idx = win.panels[0].drive_box.findText(str(d2))
+    assert idx >= 0
+    win.panels[0].drive_box.setCurrentIndex(idx)
+    assert win.panels[0].current_path() == str(d2)
     app.processEvents()
 
 

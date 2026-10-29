@@ -409,8 +409,16 @@ def app_icon(size: int = 256) -> QIcon:
     return QIcon(px)
 
 
+def _set_windows_app_id(app_id: str = "com.sungback.commander") -> None:
+    if sys.platform != "win32":
+        return
+    with suppress(OSError, AttributeError, ValueError):
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+
+
 def main() -> int:
     _set_macos_app_name("commander")
+    _set_windows_app_id()
     ops.load_size_cache()
     app = QApplication(sys.argv)
     app.setApplicationName("commander")

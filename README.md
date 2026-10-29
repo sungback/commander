@@ -1,11 +1,12 @@
 # commander
 
-Total Commander 스타일의 키보드 중심 듀얼 패널 파일 관리자 (macOS 우선, Python + PySide6 기반).
+Total Commander 스타일의 키보드 중심 듀얼 패널 파일 관리자 (macOS & Windows 지원, Python + PySide6 기반).
 
 ## 주요 기능
 
 - **듀얼 패널 & 멀티 탭**
   - 좌우 독립 패널(`Tab` 전환) 및 패널별 멀티 탭(`Ctrl+T` / `Ctrl+W`)
+  - 경로 입력창 좌측 드라이브 선택 드롭다운(`C:\`, `D:\`, `/` 등 즉시 전환)
   - 모든 정렬 기준과 방향에서 `..` 상위 폴더 최상단 고정 및 폴더 → 파일 순 정렬
   - 패널 하단 상태 표시줄에 선택 항목 및 전체 항목 개수·용량 실시간 표시
 - **키보드 중심 파일 작업**
@@ -51,8 +52,10 @@ Total Commander 스타일의 키보드 중심 듀얼 패널 파일 관리자 (ma
 
 ## 설치 및 실행
 
-### 1. macOS 릴리스 설치
-[Releases](https://github.com/sungback/commander/releases) 페이지에서 최신 버전의 `commander.dmg` 또는 `commander.zip`을 다운로드한 뒤, `commander.app`을 `/Applications`에 복사해 실행합니다.
+### 1. 릴리스 설치 (macOS / Windows)
+[Releases](https://github.com/sungback/commander/releases) 페이지에서 운영체제에 맞는 최신 패키지를 다운로드합니다:
+- **macOS**: `commander.dmg` 또는 `commander.zip` 다운로드 후 `commander.app`을 `/Applications`에 복사해 실행
+- **Windows**: `commander-win64.zip` 다운로드 및 압축 해제 후 `commander/commander.exe` 실행
 
 ### 2. 소스에서 실행
 Python 3.11 이상이 필요합니다.
@@ -68,12 +71,15 @@ pip install -e ".[dev]"
 ./scripts/run.sh
 ```
 
-### 3. macOS `.app` / `.dmg` 패키징 빌드
+### 3. 패키징 빌드 (macOS / Windows)
 ```sh
 pip install pyinstaller
+
+# macOS (.app / .dmg / .zip 생성 및 /Applications 설치)
 ./packaging/build_mac.sh
-# 또는 빌드 후 /Applications/commander.app 설치 및 즉시 실행:
-./scripts/run.sh --app
+
+# Windows (dist/commander-win64.zip 생성, PowerShell)
+pwsh ./packaging/build_win.ps1
 ```
 
 ---

@@ -28,6 +28,7 @@
 - [x] 하네스 엔지니어링 구축 (`CLAUDE.md` 불변식 명문화, `scripts/check.sh`, `scripts/run.sh`, `.git/hooks/pre-commit`)
 - [x] 세션 상태 영구 저장·복원 (`~/.config/commander/state.json`: 패널별 정렬 컬럼·방향, 탭 목록·경로, 커서·선택 항목, 창 크기·위치 및 스플리터 비율)
 - [x] 폴더 용량 Bottom-up 하위 트리 동시 캐싱 및 디스크 영구 캐시 (`~/.config/commander/dir_sizes.json`: 한 번 계산된 폴더·하위 폴더는 재진입/재시작 시 0ms 즉시 표시, 복사/이동/삭제 시 경로 및 상위 폴더 캐시 자동 무효화)
+- [x] Windows 지원 및 멀티 플랫폼 CI/릴리스 (경로/캐시 키 정규화 `ops.norm_key`, Windows 예약어·금지 문자 검증 및 대소문자 이름 변경 허용, 경로 입력창 옆 드라이브 선택 `QComboBox`, Windows `AppUserModelID`, `packaging/build_win.ps1`, `.github/workflows/release.yml`)
 
 ## 결정 / 메모
 - FTP: 평문(FTPS 미지원), 이동·삭제·폴더 생성·검색·이름 변경은 원격에서 거부, 원격↔원격 전송 불가, 연결은 UI 스레드에서 수행(최대 15초 블록), 취소는 파일 사이에서만 반영

@@ -59,7 +59,7 @@ def test_delete(tree):
 def test_delete_symlink_keeps_target(tree):
     src, _ = tree
     link = src / "link"
-    link.symlink_to(src / "d")
+    link.symlink_to(src / "d", target_is_directory=True)
     ops.delete([link])
     assert not link.is_symlink() and (src / "d" / "b.txt").exists()
 
@@ -67,7 +67,7 @@ def test_delete_symlink_keeps_target(tree):
 def test_make_dir(tmp_path):
     p = ops.make_dir(tmp_path, "new")
     assert p.is_dir()
-    for bad in ["", "a/b", ".."]:
+    for bad in ["", "a/b", "a\\b", "..", "CON", "nul.txt", "bad:name", "trail.", "trail "]:
         with pytest.raises(ValueError):
             ops.make_dir(tmp_path, bad)
     with pytest.raises(FileExistsError):
@@ -76,10 +76,11 @@ def test_make_dir(tmp_path):
 
 def test_dir_size_and_format(tree, tmp_path):
     src, _ = tree
-    (src / "link").symlink_to(src / "d")  # symlinks must not be double-counted
+    (src / "link").symlink_to(src / "d", target_is_directory=True)  # symlinks must not be double-counted
     assert ops.dir_size(src) == (2, True)
     # Bottom-up subtree caching populates both root and child directory sizes
     assert ops.get_cached_size(str(src)) == 2
+    assert ops.get_cached_size(src.as_posix()) == 2
     assert ops.get_cached_size(str(src / "d")) == 1
     cache_file = tmp_path / "sizes.json"
     ops.save_size_cache(cache_file)

@@ -15,6 +15,26 @@ _cache_lock = threading.Lock()
 _size_cache: dict[str, int] = {}
 _cache_dirty = False
 _CACHE_MAX = 5000
+_WIN_RESERVED = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+_BAD_CHARS = set('<>:"/\\|?*')
+
+
+def norm_key(path: str | Path) -> str:
+    """Canonical path key independent of slash direction ('/' vs '\\')."""
+    return os.path.normcase(os.path.normpath(os.fspath(path)))
+
+
+def is_valid_name(name: str) -> bool:
+    """Validate a single file/folder name across POSIX and Windows rules."""
+    if not name or name in {".", ".."} or name.endswith((" ", ".")):
+        return False
+    if any(c in _BAD_CHARS or ord(c) < 32 for c in name):
+        return False
+    return name.split(".", 1)[0].upper() not in _WIN_RESERVED
 
 
 def load_size_cache(path: Path | None = None) -> dict[str, int]:
@@ -24,7 +44,7 @@ def load_size_cache(path: Path | None = None) -> dict[str, int]:
     with _cache_lock, suppress(OSError, ValueError, TypeError):
         data = json.loads(target.read_text(encoding="utf-8"))
         if isinstance(data, dict):
-            _size_cache.update({str(k): int(v) for k, v in data.items() if isinstance(v, int)})
+            _size_cache.update({norm_key(str(k)): int(v) for k, v in data.items() if isinstance(v, int)})
     return _size_cache
 
 
@@ -44,15 +64,16 @@ def save_size_cache(path: Path | None = None) -> None:
         target.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def get_cached_size(path: str) -> int | None:
-    return _size_cache.get(path)
+def get_cached_size(path: str | Path) -> int | None:
+    return _size_cache.get(norm_key(path))
 
 
-def set_cached_size(path: str, size: int) -> None:
+def set_cached_size(path: str | Path, size: int) -> None:
     global _cache_dirty
+    key = norm_key(path)
     with _cache_lock:
-        if _size_cache.get(path) != size:
-            _size_cache[path] = size
+        if _size_cache.get(key) != size:
+            _size_cache[key] = size
             _cache_dirty = True
 
 
@@ -60,8 +81,9 @@ def invalidate_size_cache(path: Path) -> None:
     """Invalidate `path`, all its ancestors, and any cached descendants."""
     global _cache_dirty
     p = Path(path).resolve()
-    prefix = str(p) + "/"
-    ancestors = {str(p), *(str(a) for a in p.parents)}
+    key = norm_key(p)
+    prefix = key if key.endswith(os.sep) else key + os.sep
+    ancestors = {key, *(norm_key(a) for a in p.parents)}
     with _cache_lock:
         drop = [k for k in _size_cache if k in ancestors or k.startswith(prefix)]
         for k in drop:
@@ -129,7 +151,7 @@ def delete(paths: Iterable[Path], progress: Progress | None = None) -> None:
 
 
 def make_dir(parent: Path, name: str) -> Path:
-    if not name or "/" in name or name in {".", ".."}:
+    if not is_valid_name(name):
         raise ValueError(f"invalid folder name: {name!r}")
     path = Path(parent) / name
     path.mkdir()

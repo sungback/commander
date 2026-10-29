@@ -53,7 +53,14 @@ def test_invalid_inputs(tmp_path):
         rename.plan([a], "", "x")
     with pytest.raises(ValueError):
         rename.plan([a], "(", "x", regex=True)
-    with pytest.raises(ValueError):
-        rename.plan([a], "a", "x/y")
-    with pytest.raises(ValueError):
-        rename.plan([a], "a", "")
+    for bad in ["x/y", "x\\y", "", "CON", "a:b"]:
+        with pytest.raises(ValueError):
+            rename.plan([a], "a", bad)
+
+
+def test_case_only_rename_works(tmp_path):
+    (a,) = _files(tmp_path, "hello.txt")
+    pairs = rename.plan([a], "hello", "HELLO")
+    assert pairs == [(a, tmp_path / "HELLO.txt")]
+    rename.apply(pairs)
+    assert [p.name for p in tmp_path.iterdir()] == ["HELLO.txt"]

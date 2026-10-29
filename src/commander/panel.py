@@ -1,10 +1,20 @@
+import os
 import posixpath
 from pathlib import Path
 
-from PySide6.QtCore import QDir, QItemSelectionModel, QModelIndex, QSortFilterProxyModel, Qt
+from PySide6.QtCore import (
+    QDir,
+    QItemSelectionModel,
+    QModelIndex,
+    QSignalBlocker,
+    QSortFilterProxyModel,
+    Qt,
+)
 from PySide6.QtGui import QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
+    QComboBox,
     QFileSystemModel,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -19,6 +29,12 @@ from .remote import FtpClient, SftpClient
 from .workers import DirSizeWorker
 
 
+def list_drives() -> list[str]:
+    """Available root drives (e.g. ['C:\\', 'D:\\'] on Windows, ['/'] on POSIX)."""
+    drives = [os.path.normpath(fi.absoluteFilePath()) for fi in QDir.drives()]
+    return drives or [os.path.sep]
+
+
 class _LocalModel(QFileSystemModel):
     """QFileSystemModel that also displays calculated directory sizes."""
 
@@ -27,9 +43,10 @@ class _LocalModel(QFileSystemModel):
         self.dir_sizes: dict[str, int] = dict(ops.load_size_cache())
 
     def set_dir_size(self, path: str, size: int) -> None:
-        if self.dir_sizes.get(path) == size:
+        key = ops.norm_key(path)
+        if self.dir_sizes.get(key) == size:
             return
-        self.dir_sizes[path] = size
+        self.dir_sizes[key] = size
         idx = self.index(path, 1)
         if idx.isValid():
             self.dataChanged.emit(idx, idx, [Qt.DisplayRole])
@@ -38,12 +55,12 @@ class _LocalModel(QFileSystemModel):
         if role == Qt.DisplayRole and index.column() == 1 and self.isDir(index):
             if self.fileName(index) == "..":
                 return ""
-            path = self.filePath(index)
-            if path in self.dir_sizes:
-                return ops.format_size(self.dir_sizes[path])
-            cached = ops.get_cached_size(path)
+            key = ops.norm_key(self.filePath(index))
+            if key in self.dir_sizes:
+                return ops.format_size(self.dir_sizes[key])
+            cached = ops.get_cached_size(key)
             if cached is not None:
-                self.dir_sizes[path] = cached
+                self.dir_sizes[key] = cached
                 return ops.format_size(cached)
         return super().data(index, role)
 
@@ -73,7 +90,8 @@ class _SortProxy(QSortFilterProxyModel):
         return super().index(row_or_path, column, QModelIndex() if parent is None else parent)
 
     def filePath(self, index: QModelIndex) -> str:
-        return self._src.filePath(self.mapToSource(index))
+        p = self._src.filePath(self.mapToSource(index))
+        return os.path.normpath(p) if p else ""
 
     def fileName(self, index: QModelIndex) -> str:
         return self._src.fileName(self.mapToSource(index))
@@ -101,8 +119,8 @@ class _SortProxy(QSortFilterProxyModel):
             return l_dir if asc else r_dir
         col = left.column()
         if col == 1:
-            l_sz = src.dir_sizes.get(src.filePath(l0), -1) if l_dir else src.size(l0)
-            r_sz = src.dir_sizes.get(src.filePath(r0), -1) if r_dir else src.size(r0)
+            l_sz = src.dir_sizes.get(ops.norm_key(src.filePath(l0)), -1) if l_dir else src.size(l0)
+            r_sz = src.dir_sizes.get(ops.norm_key(src.filePath(r0)), -1) if r_dir else src.size(r0)
             if l_sz != r_sz:
                 return l_sz < r_sz
         elif col in (2, 3):
@@ -142,9 +160,12 @@ class _Tab(QWidget):
         self._fs_model.setRootPath(path)
         self.model = _SortProxy(self._fs_model, self)
 
+        self.drive_box = QComboBox()
+        self.drive_box.setFocusPolicy(Qt.NoFocus)
         self.path_bar = QLineEdit(path)
         self.path_changed = None  # callback(path), set by FilePanel
         self.path_bar.returnPressed.connect(lambda: self.set_path(self.path_bar.text()))
+        self.drive_box.currentIndexChanged.connect(self._on_drive_selected)
 
         self.archive: Path | None = None  # set while browsing inside an archive
         self.inner = ""
@@ -156,6 +177,7 @@ class _Tab(QWidget):
         self._size_worker: DirSizeWorker | None = None
         self._pending_cur: str | None = None
         self._pending_sel: set[str] = set()
+        self._sync_drive_box()
 
         self.view = _View(self)
         self.view.setModel(self.model)
@@ -175,11 +197,39 @@ class _Tab(QWidget):
         self._scan_dir_sizes()
         self.update_status()
 
+        top_bar = QHBoxLayout()
+        top_bar.setContentsMargins(0, 0, 0, 0)
+        top_bar.setSpacing(4)
+        top_bar.addWidget(self.drive_box)
+        top_bar.addWidget(self.path_bar, 1)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.path_bar)
+        layout.addLayout(top_bar)
         layout.addWidget(self.view)
         layout.addWidget(self.status_bar)
+
+    def _sync_drive_box(self) -> None:
+        anchor = os.path.normpath(Path(self.local_dir).anchor or os.path.sep)
+        drives = list_drives()
+        if all(ops.norm_key(d) != ops.norm_key(anchor) for d in drives):
+            drives.append(anchor)
+        with QSignalBlocker(self.drive_box):
+            cur_items = [self.drive_box.itemText(i) for i in range(self.drive_box.count())]
+            if cur_items != drives:
+                self.drive_box.clear()
+                self.drive_box.addItems(drives)
+            for i, d in enumerate(drives):
+                if ops.norm_key(d) == ops.norm_key(anchor):
+                    self.drive_box.setCurrentIndex(i)
+                    break
+
+    def _on_drive_selected(self, index: int) -> None:
+        if index < 0:
+            return
+        drive = self.drive_box.itemText(index)
+        if drive:
+            self.set_path(drive)
 
     @property
     def in_archive(self) -> bool:
@@ -205,6 +255,7 @@ class _Tab(QWidget):
             self.local_dir = self.model.filePath(idx)
             self.model.setRootPath(self.local_dir)
             self.path_bar.setText(self.local_dir)
+            self._sync_drive_box()
             self._scan_dir_sizes()
             self.update_status()
             if self.path_changed:
@@ -277,7 +328,7 @@ class _Tab(QWidget):
         if parent == self.view.rootIndex():
             for r in range(first, last + 1):
                 idx = self.model.index(r, 0, parent)
-                if self.model.isDir(idx) and self.model.filePath(idx) not in self.model.dir_sizes:
+                if self.model.isDir(idx) and ops.norm_key(self.model.filePath(idx)) not in self.model.dir_sizes:
                     if self._size_worker is None or not self._size_worker.isRunning():
                         self._scan_dir_sizes()
                     break
@@ -363,12 +414,12 @@ class _Tab(QWidget):
             return val or 0
         idx0 = row_idx.siblingAtColumn(0)
         if self.model.isDir(idx0):
-            path = self.model.filePath(idx0)
-            if path in self.model.dir_sizes:
-                return self.model.dir_sizes[path]
-            cached = ops.get_cached_size(path)
+            key = ops.norm_key(self.model.filePath(idx0))
+            if key in self.model.dir_sizes:
+                return self.model.dir_sizes[key]
+            cached = ops.get_cached_size(key)
             if cached is not None:
-                self.model.dir_sizes[path] = cached
+                self.model.dir_sizes[key] = cached
                 return cached
             return 0
         return self.model.size(idx0)
@@ -482,6 +533,10 @@ class FilePanel(QWidget):
     @property
     def model(self) -> QFileSystemModel:
         return self._tab.model
+
+    @property
+    def drive_box(self) -> QComboBox:
+        return self._tab.drive_box
 
     @property
     def path_bar(self) -> QLineEdit:

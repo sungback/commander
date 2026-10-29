@@ -26,6 +26,9 @@ src/commander/
 packaging/
   launcher.py       # PyInstaller 진입점
   build_mac.sh      # commander.app / commander.zip / commander.dmg 빌드 스크립트
+  build_win.ps1     # Windows commander.exe / commander-win64.zip 빌드 스크립트
+.github/workflows/
+  release.yml       # Windows & macOS 자동 테스트·패키징 및 GitHub Release 업로드 워크플로
 scripts/
   check.sh          # 커밋 전 필수 통과 하네스 (ruff + pytest + 실제 홈 디렉터리 헤드리스 검증)
   run.sh            # 기존 프로세스 정리 후 최신 코드 실행 (--app 옵션 시 .app 재빌드 후 실행)

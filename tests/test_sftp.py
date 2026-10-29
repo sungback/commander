@@ -31,7 +31,7 @@ def _make_fs(root):
 
     class FS(SFTPServerInterface):
         def _p(self, path):
-            return os.path.join(str(root), os.path.normpath("/" + path).lstrip("/"))
+            return os.path.join(str(root), os.path.normpath("/" + path).lstrip("/\\"))
 
         def list_folder(self, path):
             out = []

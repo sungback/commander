@@ -87,9 +87,11 @@ def test_path_traversal_blocked_zip(tmp_path):
         z.writestr("../evil.txt", "x")
         z.writestr("d/../../evil2.txt", "x")
         z.writestr("/abs.txt", "x")
+        z.writestr("..\\win.txt", "x")
+        z.writestr("C:/drive.txt", "x")
     dst = tmp_path / "out"
     dst.mkdir()
-    for sel in ["../evil.txt", "/abs.txt"]:
+    for sel in ["../evil.txt", "/abs.txt", "..\\win.txt", "C:/drive.txt"]:
         with pytest.raises(ValueError):
             archive.extract(p, [sel], dst)
     with pytest.raises(ValueError):

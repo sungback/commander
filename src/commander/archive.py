@@ -52,7 +52,7 @@ def children(entries: Iterable[Entry], inner: str = "") -> list[Entry]:
             continue
         rest = e.path[len(prefix):]
         name, sep, _ = rest.partition("/")
-        if name in {"", ".", ".."}:
+        if name in {"", ".", ".."} or "\\" in name or ":" in name:
             continue
         if sep or e.is_dir:
             dirs.add(name)
@@ -66,8 +66,10 @@ def children(entries: Iterable[Entry], inner: str = "") -> list[Entry]:
 
 
 def _safe_rel(path: str) -> str:
+    if "\\" in path or path.startswith("/"):
+        raise ValueError(f"unsafe path in archive: {path!r}")
     parts = path.split("/")
-    if path.startswith("/") or ".." in parts:
+    if ".." in parts or (parts and ":" in parts[0]):
         raise ValueError(f"unsafe path in archive: {path!r}")
     return path
 

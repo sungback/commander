@@ -1,8 +1,18 @@
 """UI-independent batch rename."""
+import os
 import re
 import uuid
 from collections.abc import Iterable
+from contextlib import suppress
 from pathlib import Path
+
+from . import ops
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    with suppress(OSError):
+        return os.path.samestat(os.lstat(a), os.lstat(b))
+    return False
 
 
 def plan(paths: Iterable[Path], find: str, replace: str, regex: bool = False) -> list[tuple[Path, Path]]:
@@ -24,13 +34,15 @@ def plan(paths: Iterable[Path], find: str, replace: str, regex: bool = False) ->
         raise ValueError(f"invalid pattern: {e}") from e
     srcs = {src for src, _ in pairs}
     seen = set()
-    for src, dst in pairs:
-        if not dst.name or "/" in dst.name or dst.name in {".", ".."}:
+    for _src, dst in pairs:
+        if not ops.is_valid_name(dst.name):
             raise ValueError(f"invalid name: {dst.name!r}")
-        if dst in seen:
+        key = ops.norm_key(dst)
+        if dst in seen or key in seen:
             raise ValueError(f"duplicate target: {dst.name}")
         seen.add(dst)
-        if (dst.exists() or dst.is_symlink()) and dst not in srcs:
+        seen.add(key)
+        if (dst.exists() or dst.is_symlink()) and dst not in srcs and not any(_same_file(dst, s) for s in srcs):
             raise FileExistsError(dst)
     return pairs
 
