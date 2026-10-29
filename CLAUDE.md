@@ -13,7 +13,7 @@
 ```
 src/commander/
   __main__.py       # 진입점 (`python -m commander`)
-  app.py            # MainWindow, 단축키(Tab, Ctrl+T/W/F/N, F2~F8), 앱 아이콘, macOS 번들명 설정
+  app.py            # MainWindow, 단축키(Tab, Ctrl+T/W/F/N/H/., F2~F8), 하단 펑션키 바, 앱 아이콘, macOS 번들명 설정
   panel.py          # FilePanel, _Tab, _View, _LocalModel, _SortProxy, 하단 상태 표시줄
   ops.py            # 로컬 복사/이동/삭제/폴더 생성/폴더 용량 계산(dir_size)/크기 포맷 (UI 비의존)
   archive.py        # zip/tar(.gz/.bz2/.xz) 읽기 전용 탐색 및 추출 (UI 비의존)

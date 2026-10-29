@@ -68,9 +68,11 @@ class _LocalModel(QFileSystemModel):
 class _SortProxy(QSortFilterProxyModel):
     """Keep '..' first and directories above files regardless of sort column/order."""
 
-    def __init__(self, src: _LocalModel, parent=None):
+    def __init__(self, src: _LocalModel, parent=None, show_hidden: bool = False):
         super().__init__(parent)
         self._src = src
+        self.show_hidden = show_hidden
+        self._root_src = QModelIndex()
         self.setSourceModel(src)
         self.setDynamicSortFilter(True)
 
@@ -81,8 +83,33 @@ class _SortProxy(QSortFilterProxyModel):
     def set_dir_size(self, path: str, size: int) -> None:
         self._src.set_dir_size(path, size)
 
+    def _refresh_filter(self) -> None:
+        if hasattr(self, "invalidateRowsFilter"):
+            self.invalidateRowsFilter()
+        else:
+            self.invalidateFilter()
+
+    def set_show_hidden(self, show: bool) -> None:
+        if self.show_hidden == show:
+            return
+        self.show_hidden = show
+        self._refresh_filter()
+
     def setRootPath(self, path: str) -> QModelIndex:
-        return self.mapFromSource(self._src.setRootPath(path))
+        self._root_src = self._src.setRootPath(path)
+        if not self._root_src.isValid():
+            self._root_src = self._src.index(path)
+        self._refresh_filter()
+        return self.mapFromSource(self._root_src)
+
+    def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:
+        if self.show_hidden or not self._root_src.isValid() or source_parent != self._root_src:
+            return True
+        idx = self._src.index(source_row, 0, source_parent)
+        name = self._src.fileName(idx)
+        if name == "..":
+            return True
+        return not name.startswith(".") and not self._src.fileInfo(idx).isHidden()
 
     def index(self, row_or_path, column: int = 0, parent: QModelIndex | None = None) -> QModelIndex:
         if isinstance(row_or_path, str):
@@ -153,12 +180,12 @@ class _View(QTreeView):
 
 
 class _Tab(QWidget):
-    def __init__(self, path: str):
+    def __init__(self, path: str, show_hidden: bool = False):
         super().__init__()
         self._fs_model = _LocalModel(self)
-        self._fs_model.setFilter(QDir.AllEntries | QDir.NoDot)
-        self._fs_model.setRootPath(path)
-        self.model = _SortProxy(self._fs_model, self)
+        self._fs_model.setFilter(QDir.AllEntries | QDir.NoDot | QDir.Hidden)
+        self.model = _SortProxy(self._fs_model, self, show_hidden=show_hidden)
+        root_idx = self.model.setRootPath(path)
 
         self.drive_box = QComboBox()
         self.drive_box.setFocusPolicy(Qt.NoFocus)
@@ -170,6 +197,7 @@ class _Tab(QWidget):
         self.archive: Path | None = None  # set while browsing inside an archive
         self.inner = ""
         self._entries: list[archive.Entry] = []
+        self._raw_rows: tuple[list[tuple[str, bool, int]], str, str, bool] | None = None
         self.arch_model = QStandardItemModel(self)  # also used for remote listings
         self.remote: FtpClient | SftpClient | None = None  # set while browsing an FTP server
         self.remote_path = "/"
@@ -181,7 +209,7 @@ class _Tab(QWidget):
 
         self.view = _View(self)
         self.view.setModel(self.model)
-        self.view.setRootIndex(self.model.index(path))
+        self.view.setRootIndex(root_idx if root_idx.isValid() else self.model.index(path))
         self.view.setRootIsDecorated(False)
         self.view.setSortingEnabled(True)
         self.view.sortByColumn(0, Qt.AscendingOrder)
@@ -239,6 +267,25 @@ class _Tab(QWidget):
     def in_remote(self) -> bool:
         return self.remote is not None
 
+    @property
+    def show_hidden(self) -> bool:
+        return self.model.show_hidden
+
+    def set_show_hidden(self, show: bool) -> None:
+        if self.model.show_hidden == show:
+            return
+        self.model.set_show_hidden(show)
+        if (self.in_archive or self.in_remote) and self._raw_rows is not None:
+            self._show_rows(*self._raw_rows)
+        else:
+            if show:
+                self._scan_dir_sizes()
+            self.update_status()
+
+    def toggle_hidden(self) -> bool:
+        self.set_show_hidden(not self.show_hidden)
+        return self.show_hidden
+
     def set_path(self, path: str) -> None:
         p = Path(path)
         if archive.is_archive(p):
@@ -287,10 +334,12 @@ class _Tab(QWidget):
     def _show_rows(self, rows: list[tuple[str, bool, int]], bar: str, title: str,
                    show_dir_size: bool = False) -> None:
         self._stop_size_worker()
+        self._raw_rows = (rows, bar, title, show_dir_size)
+        visible = [r for r in rows if self.show_hidden or not r[0].startswith(".")]
         m = self.arch_model
         m.clear()
         m.setHorizontalHeaderLabels(["Name", "Size"])
-        for name, is_dir, size in [("..", True, 0)] + rows:
+        for name, is_dir, size in [("..", True, 0)] + visible:
             item = QStandardItem(name)
             item.setData(is_dir, Qt.UserRole)
             has_size = (not is_dir or show_dir_size) and name != ".."
@@ -310,6 +359,7 @@ class _Tab(QWidget):
         if self.remote is not None:
             self.remote.close()
             self.remote = None
+        self._raw_rows = None
         if self.archive is None and self.view.model() is self.model:
             return
         self.archive = None
@@ -368,11 +418,13 @@ class _Tab(QWidget):
             "inner": self.inner if self.archive else "",
             "sort_col": hdr.sortIndicatorSection(),
             "sort_order": hdr.sortIndicatorOrder().value,
+            "show_hidden": self.show_hidden,
             "current": cur_name or "",
             "selected": sel_names,
         }
 
     def restore_state(self, state: dict) -> None:
+        self.set_show_hidden(bool(state.get("show_hidden", False)))
         path = state.get("path", "")
         if path and Path(path).is_dir():
             self.set_path(path)
@@ -407,7 +459,7 @@ class _Tab(QWidget):
         if self.archive is not None or self.remote is not None:
             return
         self._stop_size_worker()
-        worker = DirSizeWorker(Path(self.local_dir))
+        worker = DirSizeWorker(Path(self.local_dir), include_hidden=self.show_hidden)
         worker.sized.connect(lambda p, s: (self.model.set_dir_size(p, s), self.update_status()))
         self._size_worker = worker
         worker.start()
@@ -553,7 +605,7 @@ class FilePanel(QWidget):
     def new_tab(self, path: str | None = None) -> None:
         prev = self._tab if self.tabs.count() else None
         path = path or (prev.current_path() if prev else str(Path.home()))
-        tab = _Tab(path)
+        tab = _Tab(path, show_hidden=prev.show_hidden if prev else False)
         if prev is not None:
             hdr = prev.view.header()
             tab.view.sortByColumn(hdr.sortIndicatorSection(), hdr.sortIndicatorOrder())
@@ -595,6 +647,16 @@ class FilePanel(QWidget):
 
     def set_path(self, path: str) -> None:
         self._tab.set_path(path)
+
+    @property
+    def show_hidden(self) -> bool:
+        return self._tab.show_hidden
+
+    def set_show_hidden(self, show: bool) -> None:
+        self._tab.set_show_hidden(show)
+
+    def toggle_hidden(self) -> bool:
+        return self._tab.toggle_hidden()
 
     @property
     def in_archive(self) -> bool:

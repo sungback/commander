@@ -20,12 +20,16 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QHBoxLayout,
     QInputDialog,
     QLineEdit,
     QMainWindow,
     QMessageBox,
     QProgressDialog,
+    QPushButton,
     QSplitter,
+    QVBoxLayout,
+    QWidget,
 )
 
 from . import archive, ops, rename
@@ -51,12 +55,40 @@ class MainWindow(QMainWindow):
         self.splitter = QSplitter()
         for p in self.panels:
             self.splitter.addWidget(p)
-        self.setCentralWidget(self.splitter)
+        fn_specs = [
+            ("F2", "F2 Rename", self.batch_rename),
+            ("F3", "F3 View", lambda: self.open_file(edit=False)),
+            ("F4", "F4 Edit", lambda: self.open_file(edit=True)),
+            ("F5", "F5 Copy", lambda: self.transfer(move=False)),
+            ("F6", "F6 Move", lambda: self.transfer(move=True)),
+            ("F7", "F7 Mkdir", self.make_dir),
+            ("F8", "F8 Delete", self.delete),
+        ]
+        self.fn_bar = QWidget()
+        fn_layout = QHBoxLayout(self.fn_bar)
+        fn_layout.setContentsMargins(2, 2, 2, 2)
+        fn_layout.setSpacing(4)
+        self.fn_buttons: dict[str, QPushButton] = {}
+        for key, label, handler in fn_specs:
+            btn = QPushButton(label)
+            btn.setFocusPolicy(Qt.NoFocus)
+            btn.clicked.connect(handler)
+            fn_layout.addWidget(btn, 1)
+            self.fn_buttons[key] = btn
+        central = QWidget()
+        root_layout = QVBoxLayout(central)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(2)
+        root_layout.addWidget(self.splitter, 1)
+        root_layout.addWidget(self.fn_bar)
+        self.setCentralWidget(central)
         QShortcut(QKeySequence("Tab"), self, activated=self.switch_panel)
         QShortcut(QKeySequence("Ctrl+T"), self, activated=lambda: self.panels[self.active_index()].new_tab())
         QShortcut(QKeySequence("Ctrl+W"), self, activated=lambda: self.panels[self.active_index()].close_tab())
         QShortcut(QKeySequence("Ctrl+F"), self, activated=self.search)
         QShortcut(QKeySequence("Ctrl+N"), self, activated=self.connect_ftp)
+        QShortcut(QKeySequence("Ctrl+H"), self, activated=self.toggle_hidden)
+        QShortcut(QKeySequence("Ctrl+."), self, activated=self.toggle_hidden)
         QShortcut(QKeySequence("F2"), self, activated=self.batch_rename)
         QShortcut(QKeySequence("F3"), self, activated=lambda: self.open_file(edit=False))
         QShortcut(QKeySequence("F4"), self, activated=lambda: self.open_file(edit=True))
@@ -116,6 +148,9 @@ class MainWindow(QMainWindow):
 
     def switch_panel(self) -> None:
         self.panels[1 - self.active_index()].view.setFocus()
+
+    def toggle_hidden(self) -> bool:
+        return self.panels[self.active_index()].toggle_hidden()
 
     def _ask(self, title: str, text: str) -> bool:
         return QMessageBox.question(self, title, text) == QMessageBox.Yes

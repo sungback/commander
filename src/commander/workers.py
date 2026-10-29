@@ -71,9 +71,10 @@ _size_workers: set["DirSizeWorker"] = set()
 class DirSizeWorker(QThread):
     sized = Signal(str, object)  # path, int bytes (object avoids 32-bit C++ int overflow)
 
-    def __init__(self, root: Path, parent=None):
+    def __init__(self, root: Path, include_hidden: bool = False, parent=None):
         super().__init__(parent)
         self._root = Path(root)
+        self._include_hidden = include_hidden
         self._cancel = False
         _size_workers.add(self)
         self.finished.connect(self._cleanup)
@@ -95,8 +96,9 @@ class DirSizeWorker(QThread):
         try:
             entries = sorted(
                 (e for e in self._root.iterdir()
-                 if not e.name.startswith(".") and e.is_dir() and not e.is_symlink()),
-                key=lambda p: p.name.lower(),
+                 if (self._include_hidden or not e.name.startswith("."))
+                 and e.is_dir() and not e.is_symlink()),
+                key=lambda p: (p.name.startswith("."), p.name.lower()),
             )
         except OSError:
             return

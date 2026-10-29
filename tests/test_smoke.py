@@ -363,3 +363,74 @@ def test_session_state_persisted_across_restarts(tmp_path):
     assert [p.name for p in r0.selected_paths()] == ["small.txt"]
     assert r0.view.currentIndex().siblingAtColumn(0).data() == "large.txt"
     app.processEvents()
+
+
+def test_function_key_bar_buttons(tmp_path, monkeypatch):
+    from PySide6.QtCore import Qt
+
+    _app, win, a, b = _setup(tmp_path, monkeypatch)
+    win.active_index = lambda: 0
+    assert list(win.fn_buttons) == ["F2", "F3", "F4", "F5", "F6", "F7", "F8"]
+    assert all(btn.focusPolicy() == Qt.NoFocus for btn in win.fn_buttons.values())
+
+    _select_file(win)
+    win.fn_buttons["F5"].click()
+    _idle(win)
+    assert (b / "f.txt").exists()
+
+    win.fn_buttons["F7"].click()
+    assert (a / "newdir").is_dir()
+
+
+def test_toggle_hidden_files(tmp_path):
+    import zipfile
+
+    app = QApplication.instance() or QApplication([])
+    d = tmp_path / "dir"
+    d.mkdir()
+    (d / "visible.txt").write_bytes(b"12")
+    (d / ".hidden.txt").write_bytes(b"345")
+    with zipfile.ZipFile(d / "arc.zip", "w") as z:
+        z.writestr("pub.txt", "a")
+        z.writestr(".env", "secret")
+
+    state_file = tmp_path / "state.json"
+    win = MainWindow(state_file=state_file)
+    win.active_index = lambda: 0
+    p = win.panels[0]
+    p.set_path(str(d))
+    _wait(lambda: {"visible.txt", "arc.zip"} <= _names(p))
+    assert not p.show_hidden
+    assert ".hidden.txt" not in _names(p)
+
+    # Toggle hidden on (Ctrl+H / Ctrl+.)
+    assert win.toggle_hidden() is True
+    assert p.show_hidden
+    _wait(lambda: ".hidden.txt" in _names(p))
+    assert p.model.index(0, 0, p.view.rootIndex()).data() == ".."
+
+    # New tab inherits show_hidden state
+    p.new_tab()
+    assert p.show_hidden is True
+    p.close_tab()
+
+    # Archive mode also respects show_hidden toggle
+    p.set_path(str(d / "arc.zip"))
+    assert p.in_archive
+
+    def arch_rows():
+        m = p.view.model()
+        return [m.index(r, 0).data() for r in range(m.rowCount())]
+
+    assert arch_rows() == ["..", ".env", "pub.txt"]
+    assert win.toggle_hidden() is False
+    assert arch_rows() == ["..", "pub.txt"]
+    assert win.toggle_hidden() is True
+    assert arch_rows() == ["..", ".env", "pub.txt"]
+
+    # Persisted across restart
+    p.set_path(str(d))
+    win.close()
+    win2 = MainWindow(state_file=state_file)
+    assert win2.panels[0].show_hidden is True
+    app.processEvents()
