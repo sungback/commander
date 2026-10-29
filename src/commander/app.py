@@ -8,6 +8,7 @@ from urllib.parse import unquote, urlsplit
 
 from PySide6.QtCore import QByteArray, QRectF, Qt
 from PySide6.QtGui import (
+    QAction,
     QColor,
     QIcon,
     QKeySequence,
@@ -32,23 +33,24 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import archive, ops, rename
+from . import __version__, archive, ops, rename, updater
 from .panel import FilePanel
 from .remote import FtpClient, SftpClient
 from .search_dialog import SearchDialog
 from .viewer import ViewerDialog
-from .workers import Worker
+from .workers import UpdateCheckWorker, UpdateDownloadWorker, Worker
 
 STATE_FILE = Path.home() / ".config" / "commander" / "state.json"
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, state_file: Path | None = None):
+    def __init__(self, state_file: Path | None = None, auto_check_updates: bool = False):
         super().__init__()
         self.setWindowTitle("commander")
         self.setWindowIcon(app_icon())
         self.resize(1100, 650)
         self._worker: Worker | None = None
+        self._update_worker: UpdateCheckWorker | UpdateDownloadWorker | None = None
         self._state_file = state_file
         home = str(Path.home())
         self.panels = [FilePanel(home), FilePanel(home)]
@@ -82,6 +84,15 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(self.splitter, 1)
         root_layout.addWidget(self.fn_bar)
         self.setCentralWidget(central)
+        help_menu = self.menuBar().addMenu("도움말")
+        self.check_update_action = QAction("업데이트 확인...", self)
+        self.check_update_action.setMenuRole(QAction.NoRole)
+        self.check_update_action.triggered.connect(lambda: self.check_for_updates(silent_if_up_to_date=False))
+        help_menu.addAction(self.check_update_action)
+        self.about_action = QAction("정보", self)
+        self.about_action.setMenuRole(QAction.NoRole)
+        self.about_action.triggered.connect(self.show_about)
+        help_menu.addAction(self.about_action)
         QShortcut(QKeySequence("Tab"), self, activated=self.switch_panel)
         QShortcut(QKeySequence("Ctrl+T"), self, activated=lambda: self.panels[self.active_index()].new_tab())
         QShortcut(QKeySequence("Ctrl+W"), self, activated=lambda: self.panels[self.active_index()].close_tab())
@@ -99,6 +110,8 @@ class MainWindow(QMainWindow):
         self.panels[0].view.setFocus()
         if self._state_file is not None:
             self.load_state(self._state_file)
+        if auto_check_updates:
+            self.check_for_updates(silent_if_up_to_date=True)
 
     def save_state(self, path: Path | None = None) -> None:
         target = path or self._state_file
@@ -355,6 +368,104 @@ class MainWindow(QMainWindow):
             return
         self._run_task("Delete", len(paths), lambda progress: ops.delete(paths, progress=progress))
 
+    def show_about(self) -> None:
+        QMessageBox.information(self, "정보", f"commander v{__version__}")
+
+    def check_for_updates(self, silent_if_up_to_date: bool = False) -> None:
+        if self._update_worker is not None:
+            return
+        worker = UpdateCheckWorker(self)
+
+        def on_checked(info: updater.ReleaseInfo) -> None:
+            worker.deleteLater()
+            self._update_worker = None
+            if updater.is_newer(info.version, __version__):
+                self._prompt_and_install_update(info)
+            elif not silent_if_up_to_date:
+                QMessageBox.information(
+                    self, "업데이트 확인", f"현재 최신 버전(v{__version__})을 사용 중입니다."
+                )
+
+        def on_failed(msg: str) -> None:
+            worker.deleteLater()
+            self._update_worker = None
+            if not silent_if_up_to_date:
+                QMessageBox.critical(self, "업데이트 확인 실패", msg)
+
+        worker.checked.connect(on_checked)
+        worker.failed.connect(on_failed)
+        self._update_worker = worker
+        worker.start()
+
+    def _prompt_and_install_update(self, info: updater.ReleaseInfo) -> None:
+        notes = f"\n\n{info.notes[:400]}" if info.notes else ""
+        msg = (
+            f"새 버전 v{info.version}이 출시되었습니다 (현재 v{__version__})."
+            f"{notes}\n\n지금 다운로드하여 기존 앱을 교체하고 다시 시작할까요?"
+        )
+        if not self._ask("업데이트 발견", msg):
+            return
+        try:
+            target = updater.resolve_install_target()
+        except RuntimeError as e:
+            QMessageBox.information(
+                self, "업데이트 안내", f"{e}\n\n릴리스 페이지: {info.html_url or info.download_url}"
+            )
+            return
+
+        dialog = QProgressDialog("업데이트 다운로드 중...", "Cancel", 0, 100, self)
+        dialog.setWindowTitle("업데이트 설치")
+        dialog.setWindowModality(Qt.WindowModal)
+        dialog.setMinimumDuration(0)
+        worker = UpdateDownloadWorker(info, self)
+
+        def on_progress(done: int, total: int) -> None:
+            if total > 0:
+                dialog.setValue(min(100, int(done * 100 / total)))
+                dialog.setLabelText(
+                    f"다운로드 중... ({ops.format_size(done)} / {ops.format_size(total)})"
+                )
+            else:
+                dialog.setLabelText(f"다운로드 중... ({ops.format_size(done)})")
+
+        def on_staged(staged_path: Path) -> None:
+            dialog.reset()
+            dialog.deleteLater()
+            worker.deleteLater()
+            self._update_worker = None
+            try:
+                self.save_state()
+                ops.save_size_cache()
+                updater.apply_update_and_restart(staged_path, target)
+                self.close()
+                app = QApplication.instance()
+                if app is not None:
+                    app.quit()
+            except OSError as e:
+                self._error(e)
+
+        def on_failed(err: str) -> None:
+            dialog.reset()
+            dialog.deleteLater()
+            worker.deleteLater()
+            self._update_worker = None
+            QMessageBox.critical(self, "업데이트 설치 실패", err)
+
+        def on_finished() -> None:
+            if self._update_worker is worker:
+                dialog.reset()
+                dialog.deleteLater()
+                worker.deleteLater()
+                self._update_worker = None
+
+        worker.progress.connect(on_progress)
+        worker.staged.connect(on_staged)
+        worker.failed.connect(on_failed)
+        worker.finished.connect(on_finished)
+        dialog.canceled.connect(worker.cancel)
+        self._update_worker = worker
+        worker.start()
+
 
 def _set_macos_app_name(name: str) -> None:
     if sys.platform != "darwin":
@@ -459,7 +570,7 @@ def main() -> int:
     app.setApplicationName("commander")
     app.setApplicationDisplayName("commander")
     app.setWindowIcon(app_icon())
-    win = MainWindow(state_file=STATE_FILE)
+    win = MainWindow(state_file=STATE_FILE, auto_check_updates=True)
     app.aboutToQuit.connect(win.save_state)
     app.aboutToQuit.connect(ops.save_size_cache)
     win.show()

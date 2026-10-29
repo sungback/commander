@@ -1,11 +1,13 @@
 """Background execution of ops functions with progress and cancel."""
 import atexit
+import subprocess
+import zipfile
 from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
-from . import ops, search
+from . import ops, search, updater
 
 Task = Callable[[Callable[[Path], None]], None]
 
@@ -129,6 +131,55 @@ class DirSizeWorker(QThread):
             )
             if not self._cancel and done:
                 self.sized.emit(path, size)
+
+
+class UpdateCheckWorker(QThread):
+    checked = Signal(object)  # updater.ReleaseInfo
+    failed = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        _size_workers.add(self)
+        self.finished.connect(lambda: _size_workers.discard(self))
+
+    def cancel(self) -> None:
+        pass
+
+    def run(self) -> None:
+        try:
+            info = updater.fetch_latest_release()
+            self.checked.emit(info)
+        except (OSError, ValueError, RuntimeError) as e:
+            self.failed.emit(f"{type(e).__name__}: {e}")
+
+
+class UpdateDownloadWorker(QThread):
+    progress = Signal(object, object)  # downloaded_bytes, total_bytes
+    staged = Signal(object)  # Path
+    failed = Signal(str)
+
+    def __init__(self, info: updater.ReleaseInfo, parent=None):
+        super().__init__(parent)
+        self._info = info
+        self._cancel = False
+        _size_workers.add(self)
+        self.finished.connect(lambda: _size_workers.discard(self))
+
+    def cancel(self) -> None:
+        self._cancel = True
+
+    def run(self) -> None:
+        try:
+            path = updater.download_and_stage(
+                self._info,
+                progress=lambda done, total: self.progress.emit(done, total),
+                cancel=lambda: self._cancel,
+            )
+            self.staged.emit(path)
+        except updater.UpdateCancelled:
+            pass
+        except (OSError, ValueError, RuntimeError, zipfile.BadZipFile, subprocess.SubprocessError) as e:
+            self.failed.emit(f"{type(e).__name__}: {e}")
 
 
 atexit.register(DirSizeWorker.stop_all)

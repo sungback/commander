@@ -12,8 +12,9 @@
 ## 실제 디렉터리 구조
 ```
 src/commander/
+  __init__.py       # 패키지 버전 (`__version__`)
   __main__.py       # 진입점 (`python -m commander`)
-  app.py            # MainWindow, 단축키(Tab, Ctrl+T/W/F/N/H/., F2~F8), 하단 펑션키 바, 앱 아이콘, macOS 번들명 설정
+  app.py            # MainWindow, 단축키(Tab, Ctrl+T/W/F/N/H/., F2~F8), 하단 펑션키 바, 도움말/업데이트 메뉴, 앱 아이콘
   panel.py          # FilePanel, _Tab, _View, _LocalModel, _SortProxy, 하단 상태 표시줄
   ops.py            # 로컬 복사/이동/삭제/폴더 생성/폴더 용량 계산(dir_size)/크기 포맷 (UI 비의존)
   archive.py        # zip/tar(.gz/.bz2/.xz) 읽기 전용 탐색 및 추출 (UI 비의존)
@@ -21,8 +22,9 @@ src/commander/
   rename.py         # 일괄 이름 변경 계획(plan) 및 임시 이름 경유 적용(apply)
   search.py         # 글롭/부분 문자열 재귀 파일 검색 제너레이터
   search_dialog.py  # Ctrl+F 검색 대화상자 (스트리밍 결과 + 선택 폴더 이동)
+  updater.py        # GitHub Releases 최신 버전 조회, 에셋 다운로드·스테이징, 기존 앱 교체 및 재실행 (UI 비의존)
   viewer.py         # F3 뷰어 / F4 에디터 (1MB 이하 UTF-8만 편집 허용)
-  workers.py        # Worker(파일 작업), SearchWorker(검색), DirSizeWorker(백그라운드 폴더 용량)
+  workers.py        # Worker(파일 작업), SearchWorker(검색), DirSizeWorker(폴더 용량), UpdateCheck/DownloadWorker
 packaging/
   launcher.py       # PyInstaller 진입점
   build_mac.sh      # commander.app / commander.zip / commander.dmg 빌드 스크립트

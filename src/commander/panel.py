@@ -84,8 +84,9 @@ class _SortProxy(QSortFilterProxyModel):
         self._src.set_dir_size(path, size)
 
     def _refresh_filter(self) -> None:
-        if hasattr(self, "invalidateRowsFilter"):
-            self.invalidateRowsFilter()
+        if hasattr(self, "beginFilterChange") and hasattr(self, "endFilterChange"):
+            self.beginFilterChange()
+            self.endFilterChange()
         else:
             self.invalidateFilter()
 
