@@ -1,10 +1,18 @@
 # TASKS
 
-작업 진행 상황의 단일 출처. 작업을 시작·완료할 때마다 갱신하고, 커밋에 함께 포함한다.
+작업 진행 상황의 단일 출처. `/exit` 후 재접속해도 바로 이어서 작업할 수 있도록, **모든 작업을 시작·완료할 때마다 이 파일을 갱신하고 커밋에 함께 포함한다.**
 상태: `[ ]` 대기 / `[~]` 진행 중 / `[x]` 완료
 
-## 현재 작업
-- 다음: (미정)
+## 현재 상태 요약 (세션 복원용)
+- **버전**: `v0.2.0` (`pyproject.toml`)
+- **원격 저장소**: https://github.com/sungback/commander (`origin/main`)
+- **릴리스**:
+  - `v0.1.0`: macOS 초기 릴리스 (`commander.dmg`, `commander.zip` 수동 업로드 완료)
+  - `v0.2.0`: Windows 지원 + 드라이브 선택(`QComboBox`) + GitHub Actions 멀티 플랫폼(`windows-latest`, `macos-latest`) 자동 빌드·릴리스 워크플로 적용
+- **즉시 실행/검증 명령**:
+  - `./scripts/check.sh` — `ruff` + `pytest`(78개 테스트) + 실제 홈 디렉터리 오프스크린 스모크/성능 체크
+  - `./scripts/run.sh` — 소스 직접 실행 (`--app` 옵션 시 `/Applications/commander.app` 재빌드·설치·실행)
+- **다음 예정 작업**: (대기 중 — 새로운 요청 시 여기에 기록)
 
 ## MVP
 - [x] 스캐폴딩 (pyproject, venv, 진입점) — 19bb4eb

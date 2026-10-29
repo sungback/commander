@@ -10,7 +10,7 @@ from commander.viewer import MAX_BYTES, ViewerDialog, read_text
 
 def test_read_text_modes(tmp_path):
     f = tmp_path / "a.txt"
-    f.write_text("héllo")
+    f.write_text("héllo", encoding="utf-8")
     assert read_text(f, strict=True) == "héllo"
     b = tmp_path / "b.bin"
     b.write_bytes(b"\xff\xfe")

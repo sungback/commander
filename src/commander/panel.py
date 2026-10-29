@@ -240,26 +240,30 @@ class _Tab(QWidget):
         return self.remote is not None
 
     def set_path(self, path: str) -> None:
-        if archive.is_archive(Path(path)):
+        p = Path(path)
+        if archive.is_archive(p):
             try:
-                self.open_archive(Path(path))
+                self.open_archive(p)
             except (OSError, ValueError) as e:
                 QMessageBox.critical(self, "Error", f"{type(e).__name__}: {e}")
             return
-        idx = self.model.index(path)
-        if self.model.isDir(idx):
+        if not p.is_dir():
+            return
+        idx = self.model.setRootPath(path)
+        if not idx.isValid():
+            idx = self.model.index(path)
+        if idx.isValid():
             self._pending_cur = None
             self._pending_sel.clear()
             self._leave_archive()
             self.view.setRootIndex(idx)
             self.local_dir = self.model.filePath(idx)
-            self.model.setRootPath(self.local_dir)
             self.path_bar.setText(self.local_dir)
             self._sync_drive_box()
             self._scan_dir_sizes()
             self.update_status()
             if self.path_changed:
-                self.path_changed(self.model.filePath(idx))
+                self.path_changed(self.local_dir)
 
     def open_archive(self, path: Path, inner: str = "") -> None:
         if self.archive != path:
