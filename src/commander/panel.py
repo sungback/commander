@@ -184,6 +184,7 @@ class _SortProxy(QSortFilterProxyModel):
 
 
 _SELECT_KEYS = (Qt.Key_Plus, Qt.Key_Minus, Qt.Key_Asterisk)
+FLAT_LIMIT = 20_000
 
 
 class _FilterEdit(QLineEdit):
@@ -246,7 +247,7 @@ class _View(QTreeView):
         tab = self._tab
         target = tab.current_path()
         idx = self.indexAt(e.position().toPoint()).siblingAtColumn(0)
-        if idx.isValid() and tab.model.isDir(idx) and tab.model.fileName(idx) != "..":
+        if not tab.flat and idx.isValid() and tab.model.isDir(idx) and tab.model.fileName(idx) != "..":
             target = tab.model.filePath(idx)
         paths = [Path(u.toLocalFile()) for u in e.mimeData().urls() if u.isLocalFile()]
         paths = [p for p in paths
@@ -310,6 +311,7 @@ class _Tab(QWidget):
         self.remote: FtpClient | SftpClient | None = None  # set while browsing an FTP server
         self.remote_path = "/"
         self.local_dir = path  # last local folder, kept while browsing a remote
+        self.flat = False  # local folder shown with all files of its subfolders in one list
         self._size_worker: DirSizeWorker | None = None
         self._pending_cur: str | None = None
         self._pending_sel: set[str] = set()
@@ -389,7 +391,9 @@ class _Tab(QWidget):
         if self.model.show_hidden == show:
             return
         self.model.set_show_hidden(show)
-        if (self.in_archive or self.in_remote) and self._raw_rows is not None:
+        if self.flat:
+            self.show_flat()  # hidden files are filtered while walking the tree
+        elif self._raw_rows is not None:
             self._show_rows(*self._raw_rows)
         else:
             if show:
@@ -416,7 +420,7 @@ class _Tab(QWidget):
         if pattern:
             self.filter_bar.show()
         self.model.set_name_filter(pattern)
-        if (self.in_archive or self.in_remote) and self._raw_rows is not None:
+        if self._raw_rows is not None:
             self._show_rows(*self._raw_rows)
         else:
             self.update_status()
@@ -482,6 +486,47 @@ class _Tab(QWidget):
             if self.path_changed:
                 self.path_changed(self.local_dir)
 
+    def show_flat(self) -> None:
+        """Flat (branch) view: every file below the current local folder in one list.
+
+        Still local mode: selections are real paths, so every file operation keeps working.
+        """
+        if self.archive is not None or self.remote is not None:
+            return
+        root = self.local_dir
+        rows: list[tuple[str, bool, int]] = []
+        truncated = False
+        for dirpath, dirnames, filenames in os.walk(root):
+            if not self.show_hidden:
+                dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+            dirnames.sort(key=str.lower)
+            for name in sorted(filenames, key=str.lower):
+                if not self.show_hidden and name.startswith("."):
+                    continue
+                full = os.path.join(dirpath, name)
+                try:
+                    size = os.lstat(full).st_size
+                except OSError:
+                    continue
+                rows.append((os.path.relpath(full, root), False, size))
+                if len(rows) >= FLAT_LIMIT:
+                    truncated = True
+                    break
+            if truncated:
+                break
+        if not self.flat:
+            self._reset_filter()
+        self.flat = True
+        note = f", 처음 {FLAT_LIMIT}개만 표시" if truncated else ""
+        self._show_rows(rows, f"{root}  [평면 보기{note}]", root)
+
+    def toggle_flat(self) -> bool:
+        if self.flat:
+            self.set_path(self.local_dir)
+        else:
+            self.show_flat()
+        return self.flat
+
     def open_archive(self, path: Path, inner: str = "") -> None:
         if self.archive != path:
             self._entries = archive.read_entries(path)  # raises before any state changes
@@ -509,7 +554,7 @@ class _Tab(QWidget):
                    show_dir_size: bool = False) -> None:
         self._stop_size_worker()
         self._raw_rows = (rows, bar, title, show_dir_size)
-        visible = [r for r in rows if (self.show_hidden or not r[0].startswith("."))
+        visible = [r for r in rows if (self.show_hidden or self.flat or not r[0].startswith("."))
                    and name_matches(r[0], self.filter_text)]
         m = self.arch_model
         m.clear()
@@ -536,6 +581,7 @@ class _Tab(QWidget):
             self.remote.close()
             self.remote = None
         self._raw_rows = None
+        self.flat = False
         if self.archive is None and self.view.model() is self.model:
             return
         self.archive = None
@@ -633,7 +679,7 @@ class _Tab(QWidget):
                 pass
 
     def _scan_dir_sizes(self) -> None:
-        if self.archive is not None or self.remote is not None:
+        if self.archive is not None or self.remote is not None or self.flat:
             return
         self._stop_size_worker()
         worker = DirSizeWorker(Path(self.local_dir), include_hidden=self.show_hidden)
@@ -642,7 +688,7 @@ class _Tab(QWidget):
         worker.start()
 
     def _entry_size(self, row_idx: QModelIndex) -> int:
-        if self.archive is not None or self.remote is not None:
+        if self.archive is not None or self.remote is not None or self.flat:
             val = self.arch_model.itemFromIndex(row_idx.siblingAtColumn(1)).data(Qt.UserRole)
             return val or 0
         idx0 = row_idx.siblingAtColumn(0)
@@ -715,6 +761,8 @@ class _Tab(QWidget):
         if self.remote is not None:
             if self.remote_path != "/":
                 self.open_remote(self.remote, posixpath.dirname(self.remote_path.rstrip("/")) or "/")
+        elif self.flat:
+            self.set_path(self.local_dir)  # '..' / Backspace leaves the flat view
         elif self.archive is None:
             self.set_path(str(Path(self.current_path()).parent))
         elif self.inner:
@@ -728,11 +776,16 @@ class _Tab(QWidget):
             return self.local_dir
         if self.archive is not None:
             return str(self.archive.parent)
+        if self.flat:
+            return self.local_dir
         return self.model.filePath(self.view.rootIndex())
 
     def selected_paths(self) -> list[Path]:
         if self.archive is not None or self.remote is not None:
             return []
+        if self.flat:
+            rows = sorted(self.view.selectionModel().selectedRows(0), key=lambda i: i.row())
+            return [Path(self.local_dir) / i.data() for i in rows if i.data() != ".."]
         rows = sorted(self.view.selectionModel().selectedRows(0), key=lambda i: i.row())
         return [Path(self.model.filePath(i)) for i in rows if self.model.fileName(i) != ".."]
 
@@ -769,6 +822,13 @@ class _Tab(QWidget):
             elif item.data(Qt.UserRole):
                 self.open_archive(self.archive, (self.inner + "/" if self.inner else "") + item.text())
             return
+        if self.flat:
+            name = idx.siblingAtColumn(0).data()
+            if name == "..":
+                self.go_up()
+            elif self.file_activated:
+                self.file_activated(Path(self.local_dir) / name)
+            return
         if self.model.fileName(idx) == "..":
             self.go_up()
             return
@@ -783,6 +843,8 @@ class _Tab(QWidget):
         if self.archive is not None or self.remote is not None:
             return None
         idx = self.view.currentIndex().siblingAtColumn(0)
+        if self.flat:
+            return Path(self.local_dir) / idx.data() if idx.isValid() and idx.data() != ".." else None
         if not idx.isValid() or self.model.fileName(idx) == "..":
             return None
         return Path(self.model.filePath(idx))
@@ -967,6 +1029,19 @@ class FilePanel(QWidget):
 
     def current_local_path(self) -> Path | None:
         return self._tab.current_local_path()
+
+    @property
+    def flat(self) -> bool:
+        return self._tab.flat
+
+    def toggle_flat(self) -> bool:
+        return self._tab.toggle_flat()
+
+    def refresh_flat(self) -> None:
+        """Re-read flat views (they are snapshots; the local model refreshes itself)."""
+        for i in range(self.tabs.count()):
+            if self.tabs.widget(i).flat:
+                self.tabs.widget(i).show_flat()
 
     def selected_paths(self) -> list[Path]:
         return self._tab.selected_paths()

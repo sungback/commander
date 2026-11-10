@@ -145,3 +145,89 @@ def test_quick_view_replaces_inactive_panel(tmp_path, monkeypatch):
     assert win.toggle_quick_view() is False
     assert win.splitter.widget(1) is right and not right.isHidden() and win.quick.isHidden()
     assert win.splitter.sizes() == sizes and win.quick.path is None
+
+
+def test_flat_view_lists_subtree_and_keeps_file_operations(tmp_path, monkeypatch):
+    import os
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QDesktopServices
+    from PySide6.QtTest import QTest
+    from test_smoke import _idle
+
+    _app, win, a, b = _setup(tmp_path, monkeypatch)
+    win.active_index = lambda: 0
+    (a / "sub" / "deep").mkdir(parents=True)
+    (a / "sub" / "one.txt").write_text("1")
+    (a / "sub" / "deep" / "two.log").write_text("22")
+    (a / ".git").mkdir()
+    (a / ".git" / "config").write_text("hidden")
+    left = win.panels[0]
+
+    def rows():
+        m = left.view.model()
+        return [m.index(r, 0).data() for r in range(m.rowCount())]
+
+    win.actions_by_name["flat"].trigger()
+    j = os.path.join
+    assert left.flat and rows() == ["..", "f.txt", j("sub", "one.txt"), j("sub", "deep", "two.log")]
+    assert left.current_path() == str(a) and "평면 보기" in left.path_bar.text()
+    assert left.status_bar.text() == "0 / 3 selected (0 B / 4 B)"
+    assert not left.in_archive and not left.in_remote
+
+    left.set_filter("*.log")  # the quick filter works on the flat listing too
+    assert rows() == ["..", j("sub", "deep", "two.log")]
+    left.clear_filter()
+    win.toggle_hidden()
+    assert j(".git", "config") in rows()
+    win.toggle_hidden()
+    assert j(".git", "config") not in rows()
+
+    opened = []
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url.toLocalFile()) or True)
+    left.select_names({j("sub", "one.txt")})
+    left.view.setCurrentIndex(left.view.selectionModel().selectedRows(0)[0])
+    assert left.current_local_path() == a / "sub" / "one.txt"
+    QTest.keyClick(left.view, Qt.Key_Return)
+    assert opened == [str(a / "sub" / "one.txt")]
+
+    left.select_names({j("sub", "one.txt"), j("sub", "deep", "two.log")})
+    assert left.selected_paths() == [a / "sub" / "one.txt", a / "sub" / "deep" / "two.log"]
+    win.transfer(move=True)  # F6 on a flat selection moves the real files
+    _idle(win)
+    assert (b / "one.txt").read_text() == "1" and (b / "two.log").read_text() == "22"
+    assert rows() == ["..", "f.txt"]  # the snapshot is refreshed when the job ends
+
+    QTest.keyClick(left.view, Qt.Key_Backspace)  # leaves the flat view, stays in the folder
+    assert not left.flat and left.current_path() == str(a)
+    _wait(lambda: "sub" in _names(left))
+    left.toggle_flat()
+    left.set_path(str(a / "sub"))  # navigating also leaves it
+    assert not left.flat and left.current_path() == str(a / "sub")
+
+
+def test_flat_view_limit_and_refused_in_archives(tmp_path, monkeypatch):
+    import zipfile
+
+    from PySide6.QtWidgets import QMessageBox
+
+    from commander import panel as panel_mod
+
+    _app, win, a, _b = _setup(tmp_path, monkeypatch)
+    win.active_index = lambda: 0
+    for i in range(5):
+        (a / f"n{i}.txt").write_text("x")
+    monkeypatch.setattr(panel_mod, "FLAT_LIMIT", 3)
+    left = win.panels[0]
+    left.toggle_flat()
+    assert left.view.model().rowCount() == 4 and "처음 3개만" in left.path_bar.text()
+    left.toggle_flat()
+    assert not left.flat
+
+    with zipfile.ZipFile(a / "z.zip", "w") as z:
+        z.writestr("in.txt", "hi")
+    left.set_path(str(a / "z.zip"))
+    errors = []
+    monkeypatch.setattr(QMessageBox, "critical", lambda *args: errors.append(args[2]))
+    win.toggle_flat()
+    assert len(errors) == 1 and left.in_archive and not left.flat

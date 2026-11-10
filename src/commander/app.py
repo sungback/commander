@@ -124,6 +124,7 @@ class MainWindow(QMainWindow):
             ("pack", "압축 파일 만들기...", "Alt+F5", self.pack),
             ("quick_view", "빠른 보기 (Quick View)", "Meta+Q" if sys.platform == "darwin" else "Ctrl+Q",
              self.toggle_quick_view),
+            ("flat", "평면 보기 (하위 폴더 파일 모두 표시)", "Ctrl+B", self.toggle_flat),
             ("checksum", "체크섬 계산...", "", self.checksum),
             ("verify", "체크섬 검증", "", self.verify_checksum),
         ):
@@ -242,6 +243,7 @@ class MainWindow(QMainWindow):
         self._conflicts = [c for c in self._conflicts if c[0] is not job]
         errors = job.errors
         job.deleteLater()
+        self._refresh_flat()
         if errors:
             shown = "\n".join(errors[:10])
             more = f"\n... (+{len(errors) - 10} more)" if len(errors) > 10 else ""
@@ -328,6 +330,17 @@ class MainWindow(QMainWindow):
     def switch_panel(self) -> None:
         if self._quick_side is None:  # with Quick View on, the other panel is not visible
             self.panels[1 - self.active_index()].view.setFocus()
+
+    def toggle_flat(self) -> None:
+        panel = self.panels[self.active_index()]
+        if panel.in_archive or panel.in_remote:
+            self._error(ValueError("flat view works on local folders only"))
+            return
+        panel.toggle_flat()
+
+    def _refresh_flat(self) -> None:
+        for panel in self.panels:
+            panel.refresh_flat()
 
     def toggle_quick_view(self) -> bool:
         """Show a live preview of the file under the cursor in place of the inactive panel."""
@@ -813,6 +826,7 @@ class MainWindow(QMainWindow):
             rename.apply(dlg.pairs)
         except (OSError, ValueError) as e:
             self._error(e)
+        self._refresh_flat()
 
     def open_file(self, edit: bool) -> None:
         paths = [p for p in self.panels[self.active_index()].selected_paths() if p.is_file()]

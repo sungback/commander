@@ -63,6 +63,7 @@ tests/              # 단위 및 오프스크린 UI 통합 테스트
      - **로컬**: `_SortProxy(_LocalModel)` 사용, 모든 파일 작업(F2~F8, Ctrl+F) 가능.
      - **압축 (`in_archive`)**: `arch_model`(`QStandardItemModel`) 사용, 읽기/F5 추출만 가능(수정 작업 거부), 폴더 용량은 압축 엔트리 합산으로 즉시 표시.
      - **원격 (`in_remote`)**: `arch_model` 사용, 탐색 및 F5 업로드/다운로드 가능.
+     - **평면 보기 (`flat`)**는 4번째 모드가 아니라 로컬 모드의 표시 방식이다: `arch_model`에 상대 경로를 나열하지만 `selected_paths()`/`current_path()`는 실제 로컬 경로를 돌려준다. 패널 코드에서 "행 목록 모델인가"는 `_raw_rows is not None`으로, "로컬이 아닌가"는 `in_archive or in_remote`로 구분한다.
 2. **목록 정렬 및 `..` 최상단 고정**
    - 로컬(`_SortProxy`), 압축, 원격 모든 모드와 모든 컬럼/정렬 방향(오름·내림차순)에서 첫 번째 행(`row 0`)은 항상 `..`이어야 하며, 그 아래로 폴더 → 파일 순서를 유지한다.
    - `panel.model`은 외부에 프록시 인덱스 기준으로 `index()`, `filePath()`, `fileName()`, `isDir()`, `size()`를 일관되게 노출해야 한다 (`_fs_model` 소스 인덱스와 혼용 금지).
