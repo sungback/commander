@@ -60,6 +60,8 @@ def _setup(tmp_path, monkeypatch):
     (a / "f.txt").write_text("x")
     monkeypatch.setattr(QMessageBox, "question", lambda *_: QMessageBox.Yes)
     monkeypatch.setattr(QMessageBox, "critical", lambda *_: None)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *_: None)
+    monkeypatch.setattr(MainWindow, "_ask_conflict", lambda *_: ("overwrite", True))
     monkeypatch.setattr(QInputDialog, "getText", lambda *_: ("newdir", True))
     win = MainWindow()
     win.show()

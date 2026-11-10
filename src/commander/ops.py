@@ -92,11 +92,35 @@ def invalidate_size_cache(path: Path) -> None:
             _cache_dirty = True
 
 
-def _target(src: Path, dst_dir: Path, overwrite: bool) -> Path:
+OnConflict = Callable[[Path, Path], str]  # (src, dst) -> "overwrite" | "skip" | "rename"
+OnError = Callable[[Path, Exception], None]
+
+
+def unique_name(dst: Path) -> Path:
+    """First free sibling of `dst`: 'name (2).ext', 'name (3).ext', ..."""
+    stem, suffix = (dst.name, "") if dst.is_dir() and not dst.is_symlink() else (dst.stem, dst.suffix)
+    n = 2
+    while True:
+        cand = dst.with_name(f"{stem} ({n}){suffix}")
+        if not cand.exists() and not cand.is_symlink():
+            return cand
+        n += 1
+
+
+def _target(src: Path, dst_dir: Path, overwrite: bool,
+            on_conflict: OnConflict | None = None) -> Path | None:
+    """Destination for `src`, or None when the conflict policy says to skip it."""
     dst = dst_dir / src.name
     if dst.exists() or dst.is_symlink():
-        if not overwrite:
+        choice = on_conflict(src, dst) if on_conflict else ("overwrite" if overwrite else "")
+        if choice == "skip":
+            return None
+        if choice == "rename":
+            return unique_name(dst)
+        if choice != "overwrite":
             raise FileExistsError(dst)
+        if src.exists() and dst.exists() and os.path.samefile(src, dst):
+            raise ValueError(f"source and destination are the same: {src}")
         remove(dst)
     return dst
 
@@ -108,30 +132,50 @@ def _check(src: Path, dst_dir: Path) -> None:
         raise ValueError(f"cannot place {src} inside itself")
 
 
+def _each(paths: Iterable[Path], action: Callable[[Path], None],
+          progress: Progress | None, on_error: OnError | None) -> None:
+    """Run `action` per path. With `on_error`, failures are reported and the rest continue."""
+    for p in map(Path, paths):
+        try:
+            action(p)
+        except (OSError, ValueError, shutil.Error) as e:
+            if on_error is None:
+                raise
+            on_error(p, e)
+        if progress:
+            progress(p)
+
+
 def copy(srcs: Iterable[Path], dst_dir: Path, overwrite: bool = False,
-         progress: Progress | None = None) -> None:
-    for src in map(Path, srcs):
+         progress: Progress | None = None, on_conflict: OnConflict | None = None,
+         on_error: OnError | None = None) -> None:
+    def one(src: Path) -> None:
         _check(src, dst_dir)
-        dst = _target(src, dst_dir, overwrite)
+        dst = _target(src, dst_dir, overwrite, on_conflict)
+        if dst is None:
+            return
         if src.is_dir() and not src.is_symlink():
             shutil.copytree(src, dst, symlinks=True)
         else:
             shutil.copy2(src, dst, follow_symlinks=False)
         invalidate_size_cache(dst)
-        if progress:
-            progress(src)
+
+    _each(srcs, one, progress, on_error)
 
 
 def move(srcs: Iterable[Path], dst_dir: Path, overwrite: bool = False,
-         progress: Progress | None = None) -> None:
-    for src in map(Path, srcs):
+         progress: Progress | None = None, on_conflict: OnConflict | None = None,
+         on_error: OnError | None = None) -> None:
+    def one(src: Path) -> None:
         _check(src, dst_dir)
-        dst = _target(src, dst_dir, overwrite)
+        dst = _target(src, dst_dir, overwrite, on_conflict)
+        if dst is None:
+            return
         shutil.move(src, dst)
         invalidate_size_cache(src)
         invalidate_size_cache(dst)
-        if progress:
-            progress(src)
+
+    _each(srcs, one, progress, on_error)
 
 
 def remove(path: Path) -> None:
@@ -143,11 +187,31 @@ def remove(path: Path) -> None:
     invalidate_size_cache(path)
 
 
-def delete(paths: Iterable[Path], progress: Progress | None = None) -> None:
-    for p in map(Path, paths):
-        remove(p)
-        if progress:
-            progress(p)
+def delete(paths: Iterable[Path], progress: Progress | None = None,
+           on_error: OnError | None = None) -> None:
+    _each(paths, remove, progress, on_error)
+
+
+def _move_to_trash(path: Path) -> bool:
+    from PySide6.QtCore import QFile  # QtCore only: no GUI dependency
+
+    return QFile.moveToTrash(os.fspath(path))
+
+
+def trash(paths: Iterable[Path], progress: Progress | None = None,
+          on_error: OnError | None = None,
+          trasher: Callable[[Path], bool] | None = None) -> None:
+    """Move paths to the OS trash / recycle bin (recoverable, unlike `delete`)."""
+    send = trasher or _move_to_trash
+
+    def one(p: Path) -> None:
+        if not p.exists() and not p.is_symlink():
+            raise FileNotFoundError(p)
+        if not send(p):
+            raise OSError(f"could not move to trash: {p}")
+        invalidate_size_cache(p)
+
+    _each(paths, one, progress, on_error)
 
 
 def make_dir(parent: Path, name: str) -> Path:

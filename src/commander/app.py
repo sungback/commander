@@ -21,6 +21,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QHBoxLayout,
     QInputDialog,
     QLineEdit,
@@ -106,7 +107,10 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("F5"), self, activated=lambda: self.transfer(move=False))
         QShortcut(QKeySequence("F6"), self, activated=lambda: self.transfer(move=True))
         QShortcut(QKeySequence("F7"), self, activated=self.make_dir)
-        QShortcut(QKeySequence("F8"), self, activated=self.delete)
+        for seq in ("F8", "Del", "Ctrl+Backspace"):
+            QShortcut(QKeySequence(seq), self, activated=self.delete)
+        for seq in ("Shift+F8", "Shift+Del"):
+            QShortcut(QKeySequence(seq), self, activated=lambda: self.delete(permanent=True))
         self.panels[0].view.setFocus()
         if self._state_file is not None:
             self.load_state(self._state_file)
@@ -184,6 +188,7 @@ class MainWindow(QMainWindow):
             self._error(ValueError("archives are read-only; use F5 to extract"))
             return
         refresh = None
+        allow_rename = False
         if dst_panel.in_remote:
             client, dst = dst_panel.remote, dst_panel.remote_path
             srcs = src_panel.selected_paths()
@@ -193,7 +198,6 @@ class MainWindow(QMainWindow):
             except OSError as e:
                 self._error(e)
                 return
-            conflicts = [n for n in names if n in taken]
             fn = client.upload
             verb = "Upload"
 
@@ -201,44 +205,101 @@ class MainWindow(QMainWindow):
                 dst_panel.connect_remote(client, dst)
         elif src_panel.in_remote:
             dst = Path(dst_panel.current_path())
-            client = src_panel.remote
             srcs = src_panel.remote_selection()
             names = [s.rsplit("/", 1)[-1] for s in srcs]
-            conflicts = [n for n in names if (dst / n).exists()]
-            fn = client.download
+            fn = src_panel.remote.download
             verb = "Download"
         elif src_panel.in_archive:
             dst = Path(dst_panel.current_path())
-            arc, entries = src_panel.archive, src_panel.archive_selection()
-            names = [e.rsplit("/", 1)[-1] for e in entries]
+            arc, srcs = src_panel.archive, src_panel.archive_selection()
+            names = [e.rsplit("/", 1)[-1] for e in srcs]
 
             def fn(srcs, dst, overwrite, progress):
-                archive.extract(arc, entries, dst, overwrite=overwrite, progress=progress)
-            srcs = entries
+                archive.extract(arc, srcs, dst, overwrite=overwrite, progress=progress)
             verb = "Extract"
         else:
-            dst = Path(dst_panel.current_path())
-            srcs = src_panel.selected_paths()
-            names = [s.name for s in srcs]
-            fn = ops.move if move else ops.copy
-            verb = "Move" if move else "Copy"
+            self._transfer_local(src_panel.selected_paths(), Path(dst_panel.current_path()), move)
+            return
         if not srcs:
             return
         if not self._ask(verb, f"{verb} {len(srcs)} item(s) to\n{dst}?"):
             return
-        if not (dst_panel.in_remote or src_panel.in_remote):
-            conflicts = [n for n in names if (dst / n).exists()]
-        overwrite = False
-        if conflicts:
-            shown = ", ".join(conflicts[:5]) + (" ..." if len(conflicts) > 5 else "")
-            if not self._ask("Overwrite", f"Already exists:\n{shown}\n\nOverwrite?"):
-                return
-            overwrite = True
+        if dst_panel.in_remote:
+            conflicts = [n for n in names if n in taken]
+        else:
+            conflicts = [n for n in names if (dst / n).exists() or (dst / n).is_symlink()]
+        decisions = self._resolve_conflicts(conflicts, allow_rename)
+        if decisions is None:
+            return
+        srcs = [s for s, n in zip(srcs, names, strict=True) if decisions.get(n) != "skip"]
+        if not srcs:
+            return
+        overwrite = "overwrite" in decisions.values()
         self._run_task(verb, len(srcs),
                        lambda progress: fn(srcs, dst, overwrite=overwrite, progress=progress),
                        on_done=refresh)
 
-    def _run_task(self, title: str, total: int, task, on_done=None) -> None:
+    def _transfer_local(self, srcs: list[Path], dst: Path, move: bool) -> None:
+        """Copy/move local paths into the local folder `dst` (F5/F6 and drag & drop)."""
+        if not srcs:
+            return
+        verb = "Move" if move else "Copy"
+        if not self._ask(verb, f"{verb} {len(srcs)} item(s) to\n{dst}?"):
+            return
+        conflicts = [s.name for s in srcs if (dst / s.name).exists() or (dst / s.name).is_symlink()]
+        decisions = self._resolve_conflicts(conflicts, allow_rename=True)
+        if decisions is None:
+            return
+        srcs = [s for s in srcs if decisions.get(s.name) != "skip"]
+        if not srcs:
+            return
+        fn = ops.move if move else ops.copy
+        errors: list[str] = []
+        self._run_task(
+            verb, len(srcs),
+            lambda progress: fn(srcs, dst, progress=progress,
+                                on_conflict=lambda s, d: decisions.get(s.name, ""),
+                                on_error=_collector(errors)),
+            errors=errors)
+
+    def _resolve_conflicts(self, names: list[str], allow_rename: bool) -> dict[str, str] | None:
+        """Ask what to do with each already-existing name; None means the user cancelled."""
+        decisions: dict[str, str] = {}
+        for i, name in enumerate(names):
+            answer = self._ask_conflict(name, len(names) - i - 1, allow_rename)
+            if answer is None:
+                return None
+            choice, apply_all = answer
+            if apply_all:
+                decisions.update(dict.fromkeys(names[i:], choice))
+                break
+            decisions[name] = choice
+        return decisions
+
+    def _ask_conflict(self, name: str, remaining: int, allow_rename: bool) -> tuple[str, bool] | None:
+        """(choice, apply_to_all) with choice in overwrite/skip/rename, or None to cancel."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("Already exists")
+        box.setText(f"'{name}' already exists in the destination.")
+        box.setInformativeText("Overwrite replaces the existing item (a folder is replaced entirely).")
+        buttons = {box.addButton("Overwrite", QMessageBox.DestructiveRole): "overwrite",
+                   box.addButton("Skip", QMessageBox.AcceptRole): "skip"}
+        if allow_rename:
+            buttons[box.addButton("Keep both", QMessageBox.AcceptRole)] = "rename"
+        box.addButton(QMessageBox.Cancel)
+        check = None
+        if remaining:
+            check = QCheckBox(f"Apply to all ({remaining} more)")
+            box.setCheckBox(check)
+        box.exec()
+        choice = buttons.get(box.clickedButton())
+        if choice is None:
+            return None
+        return choice, bool(check and check.isChecked())
+
+    def _run_task(self, title: str, total: int, task, on_done=None,
+                  errors: list[str] | None = None) -> None:
         if self._worker is not None:
             return  # one background task at a time
         dialog = QProgressDialog(title, "Cancel", 0, total, self)
@@ -255,6 +316,10 @@ class MainWindow(QMainWindow):
             dialog.deleteLater()
             worker.deleteLater()
             self._worker = None
+            if errors:
+                shown = "\n".join(errors[:10])
+                more = f"\n... (+{len(errors) - 10} more)" if len(errors) > 10 else ""
+                QMessageBox.warning(self, title, f"{len(errors)} item(s) failed:\n\n{shown}{more}")
             if on_done:
                 try:
                     on_done()
@@ -359,14 +424,26 @@ class MainWindow(QMainWindow):
         except (OSError, ValueError) as e:
             self._error(e)
 
-    def delete(self) -> None:
+    def delete(self, permanent: bool = False) -> None:
+        """F8 moves the selection to the trash; Shift+F8 deletes permanently."""
         panel = self.panels[self.active_index()]
+        if panel.in_archive or panel.in_remote:
+            self._error(ValueError("archives and remote folders are read-only"))
+            return
         paths = panel.selected_paths()
         if not paths:
             return
-        if not self._ask("Delete", f"Permanently delete {len(paths)} item(s)?"):
+        if permanent:
+            question = f"Permanently delete {len(paths)} item(s)?\nThis cannot be undone."
+        else:
+            question = f"Move {len(paths)} item(s) to the Trash?"
+        if not self._ask("Delete", question):
             return
-        self._run_task("Delete", len(paths), lambda progress: ops.delete(paths, progress=progress))
+        fn = ops.delete if permanent else ops.trash
+        errors: list[str] = []
+        self._run_task("Delete", len(paths),
+                       lambda progress: fn(paths, progress=progress, on_error=_collector(errors)),
+                       errors=errors)
 
     def show_about(self) -> None:
         QMessageBox.information(self, "정보", f"commander v{__version__}")
@@ -465,6 +542,13 @@ class MainWindow(QMainWindow):
         dialog.canceled.connect(worker.cancel)
         self._update_worker = worker
         worker.start()
+
+
+def _collector(errors: list[str]):
+    """ops `on_error` callback that records 'name: reason' lines for the summary dialog."""
+    def on_error(path: Path, e: Exception) -> None:
+        errors.append(f"{Path(path).name}: {type(e).__name__}: {e}")
+    return on_error
 
 
 def _set_macos_app_name(name: str) -> None:
