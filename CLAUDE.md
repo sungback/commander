@@ -23,7 +23,13 @@ src/commander/
   archive.py        # zip/tar(.gz/.bz2/.xz) 읽기 전용 탐색 및 추출 (UI 비의존)
   remote.py         # FtpClient, SftpClient (동일 메서드 인터페이스, UI 비의존)
   rename.py         # 일괄 이름 변경 계획(plan) 및 임시 이름 경유 적용(apply)
-  search.py         # 글롭/부분 문자열 재귀 파일 검색 제너레이터
+  search.py         # 글롭/부분 문자열 재귀 파일 검색 제너레이터, 파일 내용 검색(contains)
+  checksum.py       # SHA-256/SHA-1/MD5 계산, 체크섬 목록 작성·파싱·검증 (UI 비의존)
+  compare.py        # 폴더 비교(differing_names), 파일 동일성, 줄 단위 좌우 정렬 diff (UI 비의존)
+  sync.py           # 폴더 동기화 계획(scan)과 실행(apply) (UI 비의존)
+  sync_dialog.py    # 폴더 동기화 검토 대화상자
+  diff_dialog.py    # 좌우 나란히 파일 내용 비교 대화상자
+  dialogs.py        # 공용 TextDialog (결과 텍스트 표시·복사·저장)
   search_dialog.py  # Ctrl+F 검색 대화상자 (스트리밍 결과 + 선택 폴더 이동)
   updater.py        # GitHub Releases 최신 버전 조회, 에셋 다운로드·스테이징, 기존 앱 교체 및 재실행 (UI 비의존)
   viewer.py         # F3 뷰어 / F4 에디터 (1MB 이하 UTF-8만 편집 허용)

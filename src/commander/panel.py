@@ -688,6 +688,15 @@ class _Tab(QWidget):
             self.view.selectionModel().select(i, flag | QItemSelectionModel.Rows)
         return len(hits)
 
+    def select_names(self, names) -> int:
+        """Replace the selection with the entries whose names are in `names`."""
+        self.view.clearSelection()
+        hits = [i for i in self._name_rows() if i.data() in names]
+        for i in hits:
+            self.view.selectionModel().select(
+                i, QItemSelectionModel.Select | QItemSelectionModel.Rows)
+        return len(hits)
+
     def invert_selection(self) -> None:
         for i in self._name_rows():
             self.view.selectionModel().select(
@@ -890,6 +899,9 @@ class FilePanel(QWidget):
 
     def select_pattern(self, pattern: str, select: bool = True) -> int:
         return self._tab.select_pattern(pattern, select)
+
+    def select_names(self, names) -> int:
+        return self._tab.select_names(names)
 
     def invert_selection(self) -> None:
         self._tab.invert_selection()

@@ -37,12 +37,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import __version__, archive, checksum, ops, rename, shell, transfer, updater
+from . import __version__, archive, checksum, compare, ops, rename, shell, sync, transfer, updater
 from .dialogs import TextDialog
+from .diff_dialog import DiffDialog
 from .panel import FilePanel
 from .queue_panel import QueuePanel
 from .remote import FtpClient, SftpClient
 from .search_dialog import SearchDialog
+from .sync_dialog import SyncDialog
 from .viewer import ViewerDialog
 from .workers import Job, UpdateCheckWorker, UpdateDownloadWorker, Worker
 
@@ -106,6 +108,9 @@ class MainWindow(QMainWindow):
         self.tools_menu = self.menuBar().addMenu("도구")
         self.actions_by_name: dict[str, QAction] = {}
         for name, label, shortcut, handler in (
+            ("compare_dirs", "폴더 비교 (다른 항목 선택)", "Shift+F2", self.compare_dirs),
+            ("sync", "폴더 동기화...", "Ctrl+Shift+S", self.sync_dirs),
+            ("diff", "파일 내용 비교", "Ctrl+Shift+D", self.diff_files),
             ("checksum", "체크섬 계산...", "", self.checksum),
             ("verify", "체크섬 검증", "", self.verify_checksum),
         ):
@@ -589,6 +594,86 @@ class MainWindow(QMainWindow):
             self._error(ValueError("this command works on local folders only"))
             return None
         return panel, panel.selected_paths()
+
+    def _both_local(self) -> tuple[FilePanel, FilePanel] | None:
+        """(active, other) panels when both show local folders; otherwise reports an error."""
+        active = self.panels[self.active_index()]
+        other = self.panels[1 - self.active_index()]
+        if any(p.in_archive or p.in_remote for p in (active, other)):
+            self._error(ValueError("both panels must show local folders"))
+            return None
+        return active, other
+
+    def compare_dirs(self) -> None:
+        """Select, in both panels, the entries that are missing or newer than on the other side."""
+        both = self._both_local()
+        if both is None:
+            return
+        left, right = self.panels
+        try:
+            l_mark, r_mark = compare.differing_names(
+                Path(left.current_path()), Path(right.current_path()),
+                include_hidden=left.show_hidden or right.show_hidden)
+        except (OSError, ValueError) as e:
+            self._error(e)
+            return
+        left.select_names(l_mark)
+        right.select_names(r_mark)
+        if not l_mark and not r_mark:
+            QMessageBox.information(self, "폴더 비교", "두 폴더의 내용이 같습니다.")
+
+    def sync_dirs(self) -> None:
+        """Compare both panels' folders recursively, review, then synchronize as a background job."""
+        if self._both_local() is None:
+            return
+        left, right = (Path(p.current_path()) for p in self.panels)
+        try:
+            sync.check_roots(left, right)
+        except (OSError, ValueError) as e:
+            self._error(e)
+            return
+        dlg = SyncDialog(left, right, self.panels[self.active_index()].show_hidden, self)
+        if dlg.exec() != SyncDialog.Accepted or not dlg.plan:
+            return
+        plan = dlg.plan
+        self.start_job(
+            f"Synchronize {left.name} ↔ {right.name} ({len(plan)} item(s))",
+            lambda job: sync.apply(plan, left, right, job.stats, job.control, job.on_error))
+
+    def diff_files(self) -> None:
+        """Compare two files: both selected in the active panel, or one against the other panel."""
+        both = self._both_local()
+        if both is None:
+            return
+        active, other = both
+        mine = [p for p in active.selected_paths() if p.is_file()]
+        theirs = [p for p in other.selected_paths() if p.is_file()]
+        if len(mine) == 2:
+            a, b = mine
+        elif len(mine) == 1 and len(theirs) == 1:
+            a, b = mine[0], theirs[0]
+        elif len(mine) == 1 and (Path(other.current_path()) / mine[0].name).is_file():
+            a, b = mine[0], Path(other.current_path()) / mine[0].name
+        else:
+            self._error(ValueError(
+                "select two files, or one file that also exists in the other panel"))
+            return
+        if self.active_index() == 1 and len(mine) == 1:
+            a, b = b, a  # keep the left panel's file on the left
+        try:
+            if compare.files_identical(a, b):
+                QMessageBox.information(self, "파일 내용 비교", "두 파일의 내용이 같습니다.")
+                return
+            lines_a, lines_b = compare.read_lines(a), compare.read_lines(b)
+        except OSError as e:
+            self._error(e)
+            return
+        if lines_a is None or lines_b is None:
+            QMessageBox.information(
+                self, "파일 내용 비교",
+                "두 파일의 내용이 다릅니다.\n(바이너리이거나 2MB를 넘는 파일은 줄 단위로 표시하지 않습니다.)")
+            return
+        DiffDialog(a, b, lines_a, lines_b, self).exec()
 
     def checksum(self) -> None:
         """Compute checksums of the selected files (folders are included recursively)."""
