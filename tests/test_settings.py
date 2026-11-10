@@ -182,14 +182,16 @@ def test_theme_switching(tmp_path, monkeypatch):
     before = app.palette().window().color().name()
     try:
         win.settings.theme = "dark"
-        win.apply_settings()
-        assert theme.is_dark(app)
-        win.settings.theme = "light"
-        win.apply_settings()
-        assert not theme.is_dark(app)
+        win.apply_settings()  # goes through MainWindow without errors
+        how = theme.apply(app, "dark")
+        assert how in ("native", "palette")
+        if how == "palette":  # a native switch may repaint a moment later, so only check ours
+            assert theme.is_dark(app)
+            assert theme.apply(app, "light") == "palette" and not theme.is_dark(app)
     finally:
         win.settings.theme = "system"
         win.apply_settings()
+    assert theme.apply(app, "system") == "system"
     assert app.palette().window().color().name() == before
 
 

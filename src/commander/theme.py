@@ -32,8 +32,12 @@ def customized() -> bool:
     return bool(_original)
 
 
-def apply(app: QApplication, theme: str) -> None:
-    """Switch the whole application to "system", "light" or "dark"."""
+def apply(app: QApplication, theme: str) -> str:
+    """Switch the whole application to "system", "light" or "dark".
+
+    Returns how it was done: "system", "native" (the platform style follows the requested
+    colour scheme, possibly a moment later) or "palette" (Fusion style with our own palette).
+    """
     if not _original:
         _original["style"] = app.style().objectName()
         _original["palette"] = QPalette(app.palette())
@@ -42,13 +46,14 @@ def apply(app: QApplication, theme: str) -> None:
     native = False
     if hasattr(hints, "setColorScheme"):  # Qt 6.8+: let the platform style do it when it can
         hints.setColorScheme(wanted)
-        native = theme == "system" or hints.colorScheme() == wanted
+        native = theme != "system" and hints.colorScheme() == wanted
     if theme == "system" or native:
         style = QStyleFactory.create(_original["style"])
         if style is not None and app.style().objectName() != _original["style"]:
             app.setStyle(style)
-        if theme == "system" or not native:
+        if theme == "system":
             app.setPalette(_original["palette"])
-        return
+        return "native" if native else "system"
     app.setStyle(QStyleFactory.create("Fusion"))
     app.setPalette(dark_palette() if theme == "dark" else app.style().standardPalette())
+    return "palette"
