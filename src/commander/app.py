@@ -1272,7 +1272,8 @@ def main() -> int:
     ops.load_size_cache()
     app = QApplication(sys.argv)
     app.setApplicationName("commander")
-    app.setApplicationDisplayName("commander")
+    # Leave display name empty so Qt on Windows doesn't append " - commander" to the title bar
+    app.setApplicationDisplayName("")
     app.setWindowIcon(app_icon())
     _install_korean_qt_texts(app)
     win = MainWindow(state_file=STATE_FILE, auto_check_updates=True,
