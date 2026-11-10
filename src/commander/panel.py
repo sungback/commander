@@ -731,7 +731,7 @@ class _Tab(QWidget):
     def selected_paths(self) -> list[Path]:
         if self.archive is not None or self.remote is not None:
             return []
-        rows = self.view.selectionModel().selectedRows(0)
+        rows = sorted(self.view.selectionModel().selectedRows(0), key=lambda i: i.row())
         return [Path(self.model.filePath(i)) for i in rows if self.model.fileName(i) != ".."]
 
     def archive_selection(self) -> list[str]:

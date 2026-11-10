@@ -25,8 +25,8 @@ def test_checksum_compute_then_verify(tmp_path, monkeypatch):
     win, a, _b = _win(tmp_path, monkeypatch)
     shown = _capture_text_dialogs(monkeypatch)
     monkeypatch.setattr(QInputDialog, "getItem", lambda *_: ("SHA-256", True))
-    assert [x.text() for x in win.tools_menu.actions()] == [
-        "폴더 비교 (다른 항목 선택)", "폴더 동기화...", "파일 내용 비교", "체크섬 계산...", "체크섬 검증"]
+    assert {"폴더 비교 (다른 항목 선택)", "폴더 동기화...", "파일 내용 비교", "체크섬 계산...",
+            "체크섬 검증"} <= {x.text() for x in win.tools_menu.actions()}
     _select_file(win)
     win.actions_by_name["checksum"].trigger()
     _idle(win)
@@ -240,3 +240,40 @@ def test_diff_files_choices_and_dialog(tmp_path, monkeypatch):
     left.select_names({"copy.txt"})  # no counterpart in the other panel
     win.diff_files()
     assert len(errors) == 1
+
+
+def test_pack_selection_into_other_panel(tmp_path, monkeypatch):
+    from commander import archive
+
+    win, a, b = _win(tmp_path, monkeypatch)
+    (a / "dir").mkdir()
+    (a / "dir" / "in.txt").write_text("inside")
+    left = win.panels[0]
+    _wait(lambda: "dir" in _names(left))
+    left.select_names({"f.txt", "dir"})
+    prompts = []
+
+    def get_text(*args):
+        prompts.append(args[4])
+        return ("bundle.tar.gz", True)
+
+    monkeypatch.setattr(QInputDialog, "getText", get_text)
+    win.actions_by_name["pack"].trigger()
+    _idle(win)
+    assert prompts == ["a.zip"]  # several items: named after the folder
+    assert {e.path for e in archive.read_entries(b / "bundle.tar.gz")} == {"dir", "dir/in.txt", "f.txt"}
+
+    errors = []
+    monkeypatch.setattr(QMessageBox, "critical", lambda *args: errors.append(args[2]))
+    monkeypatch.setattr(QInputDialog, "getText", lambda *_: ("bundle.rar", True))
+    win.pack()
+    assert len(errors) == 1 and not win.busy()
+
+    # The new archive can be browsed right away, and an existing name asks before overwriting
+    monkeypatch.setattr(QInputDialog, "getText", lambda *_: ("bundle.tar.gz", True))
+    monkeypatch.setattr(QMessageBox, "question", lambda *_: QMessageBox.No)
+    before = (b / "bundle.tar.gz").stat().st_mtime_ns
+    win.pack()
+    assert not win.busy() and (b / "bundle.tar.gz").stat().st_mtime_ns == before
+    win.panels[1].set_path(str(b / "bundle.tar.gz"))
+    assert win.panels[1].in_archive

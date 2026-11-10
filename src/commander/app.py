@@ -43,6 +43,7 @@ from .diff_dialog import DiffDialog
 from .panel import FilePanel
 from .queue_panel import QueuePanel
 from .remote import FtpClient, SftpClient
+from .rename_dialog import RenameDialog
 from .search_dialog import SearchDialog
 from .sync_dialog import SyncDialog
 from .viewer import ViewerDialog
@@ -111,6 +112,7 @@ class MainWindow(QMainWindow):
             ("compare_dirs", "폴더 비교 (다른 항목 선택)", "Shift+F2", self.compare_dirs),
             ("sync", "폴더 동기화...", "Ctrl+Shift+S", self.sync_dirs),
             ("diff", "파일 내용 비교", "Ctrl+Shift+D", self.diff_files),
+            ("pack", "압축 파일 만들기...", "Alt+F5", self.pack),
             ("checksum", "체크섬 계산...", "", self.checksum),
             ("verify", "체크섬 검증", "", self.verify_checksum),
         ):
@@ -144,7 +146,8 @@ class MainWindow(QMainWindow):
         for seq in ("Alt+Right", "Ctrl+]"):
             QShortcut(QKeySequence(seq), self, activated=lambda: self.panels[self.active_index()].go_forward())
         QShortcut(QKeySequence("Ctrl+."), self, activated=self.toggle_hidden)
-        QShortcut(QKeySequence("F2"), self, activated=self.batch_rename)
+        for seq in ("F2", "Ctrl+M"):
+            QShortcut(QKeySequence(seq), self, activated=self.batch_rename)
         QShortcut(QKeySequence("F3"), self, activated=lambda: self.open_file(edit=False))
         QShortcut(QKeySequence("F4"), self, activated=lambda: self.open_file(edit=True))
         QShortcut(QKeySequence("F5"), self, activated=lambda: self.transfer(move=False))
@@ -361,6 +364,7 @@ class MainWindow(QMainWindow):
         if local and paths:
             menu.addAction("이동\tF6", lambda: self.transfer(move=True))
             menu.addAction("이름 변경\tF2", self.batch_rename)
+            menu.addAction("압축...\tAlt+F5", self.pack)
             menu.addAction("휴지통으로 이동\tF8", self.delete)
             menu.addAction("영구 삭제\tShift+F8", lambda: self.delete(permanent=True))
         if selected:
@@ -675,6 +679,35 @@ class MainWindow(QMainWindow):
             return
         DiffDialog(a, b, lines_a, lines_b, self).exec()
 
+    def pack(self) -> None:
+        """Pack the selection into a new archive in the other panel's folder (Alt+F5)."""
+        sel = self._local_selection()
+        if sel is None or not sel[1]:
+            return
+        panel, paths = sel
+        other = self.panels[1 - self.active_index()]
+        folder = Path(panel.current_path() if other.in_archive or other.in_remote
+                      else other.current_path())
+        stem = paths[0].name if len(paths) == 1 else (Path(panel.current_path()).name or "archive")
+        name, ok = QInputDialog.getText(
+            self, "압축 파일 만들기",
+            f"{len(paths)}개 항목을 다음 폴더에 압축합니다:\n{folder}\n\n"
+            "파일 이름 (.zip, .tar, .tar.gz, .tar.bz2, .tar.xz):",
+            QLineEdit.Normal, f"{stem}.zip")
+        if not ok or not name.strip():
+            return
+        dst = folder / name.strip()
+        if not archive.can_create(dst.name) or not ops.is_valid_name(dst.name):
+            self._error(ValueError(f"unsupported or invalid archive name: {name.strip()}"))
+            return
+        overwrite = dst.exists() or dst.is_symlink()
+        if overwrite and not self._ask("압축 파일 만들기", f"{dst.name} 파일이 이미 있습니다. 덮어쓸까요?"):
+            return
+        self.start_job(
+            f"Pack {len(paths)} item(s) into {dst.name}",
+            lambda job: archive.create(dst, paths, overwrite=overwrite, stats=job.stats,
+                                       control=job.control, on_error=job.on_error))
+
     def checksum(self) -> None:
         """Compute checksums of the selected files (folders are included recursively)."""
         sel = self._local_selection()
@@ -729,23 +762,11 @@ class MainWindow(QMainWindow):
         paths = panel.selected_paths()
         if not paths:
             return
-        find, ok = QInputDialog.getText(self, "Rename", "Find (prefix 're:' for regex):")
-        if not ok or not find:
+        dlg = RenameDialog(paths, self)
+        if dlg.exec() != RenameDialog.Accepted or not dlg.pairs:
             return
-        replace, ok = QInputDialog.getText(self, "Rename", "Replace with:")
-        if not ok:
-            return
-        regex = find.startswith("re:")
         try:
-            pairs = rename.plan(paths, find[3:] if regex else find, replace, regex=regex)
-            if not pairs:
-                return
-            preview = "\n".join(f"{s.name} -> {d.name}" for s, d in pairs[:10])
-            if len(pairs) > 10:
-                preview += f"\n... (+{len(pairs) - 10} more)"
-            if not self._ask("Rename", f"Rename {len(pairs)} item(s)?\n\n{preview}"):
-                return
-            rename.apply(pairs)
+            rename.apply(dlg.pairs)
         except (OSError, ValueError) as e:
             self._error(e)
 

@@ -1,9 +1,10 @@
-"""UI-independent read-only archive access (zip, tar, tar.gz/bz2/xz)."""
+"""UI-independent archive access (zip, tar, tar.gz/bz2/xz): browse, extract, create."""
 import os
 import shutil
 import tarfile
 import zipfile
 from collections.abc import Iterable
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -115,3 +116,125 @@ def extract(archive: Path, inner_paths: Iterable[str], dst_dir: Path, overwrite:
                     shutil.copyfileobj(src, out)
             if progress:
                 progress(Path(sel))
+
+
+_TAR_MODES = {".tar": "w", ".tar.gz": "w:gz", ".tgz": "w:gz", ".tar.bz2": "w:bz2",
+              ".tbz2": "w:bz2", ".tar.xz": "w:xz", ".txz": "w:xz"}
+
+
+def can_create(name: str) -> bool:
+    return name.lower().endswith(SUFFIXES)
+
+
+class _Counting:
+    """File wrapper that reports the bytes tarfile reads from it and honours pause/cancel."""
+
+    def __init__(self, f, stats, control):
+        self._f, self._stats, self._control = f, stats, control
+
+    def read(self, n: int = -1) -> bytes:
+        data = self._f.read(n)
+        if self._stats:
+            self._stats.done_bytes += len(data)
+        if self._control:
+            self._control.checkpoint()
+        return data
+
+
+def _members(srcs: list[Path]):
+    """(path, archive name, is_dir) for everything under srcs; symlinks and special files skipped."""
+    for src in srcs:
+        if src.is_symlink():
+            continue
+        if not src.is_dir():
+            if src.is_file():
+                yield src, src.name, False
+            continue
+        yield src, src.name, True
+        for dirpath, dirnames, filenames in os.walk(src):
+            dirnames.sort()
+            base = Path(dirpath)
+            rel = src.name + "/" + base.relative_to(src).as_posix() if base != src else src.name
+            for d in list(dirnames):
+                if (base / d).is_symlink():
+                    dirnames.remove(d)
+                else:
+                    yield base / d, f"{rel}/{d}", True
+            for f in sorted(filenames):
+                p = base / f
+                if p.is_file() and not p.is_symlink():
+                    yield p, f"{rel}/{f}", False
+
+
+def create(dst: Path, srcs: Iterable[Path], overwrite: bool = False, stats=None, control=None,
+           on_error=None) -> None:
+    """Pack `srcs` (folders recursively) into a new zip / tar archive chosen by dst's extension.
+
+    The archive is written under a temporary name and renamed when complete, so a cancelled
+    or failed run leaves nothing behind. With `on_error`, unreadable files are reported and
+    skipped.
+    """
+    from .transfer import CHUNK, PART_SUFFIX, measure
+
+    dst = Path(dst)
+    srcs = [Path(s) for s in srcs]
+    lower = dst.name.lower()
+    if not can_create(lower):
+        raise ValueError(f"unsupported archive type: {dst.name} (use {', '.join(SUFFIXES)})")
+    if not ops.is_valid_name(dst.name):
+        raise ValueError(f"invalid name: {dst.name!r}")
+    if (dst.exists() or dst.is_symlink()) and not overwrite:
+        raise FileExistsError(dst)
+    for s in srcs:
+        if s.is_dir() and not s.is_symlink() and dst.resolve().is_relative_to(s.resolve()):
+            raise ValueError(f"cannot create the archive inside {s.name}, which is being packed")
+        if s.resolve() == dst.resolve():
+            raise ValueError("cannot pack the archive into itself")
+    if stats:
+        stats.scanning = True
+        stats.total_bytes, stats.total_items = measure(srcs, control)
+        stats.scanning = False
+    part = dst.with_name(dst.name + PART_SUFFIX)
+    is_zip = lower.endswith(".zip")
+    try:
+        if is_zip:
+            out = zipfile.ZipFile(part, "w", zipfile.ZIP_DEFLATED)
+        else:
+            mode = next(m for s, m in _TAR_MODES.items() if lower.endswith(s))
+            out = tarfile.open(part, mode)  # noqa: SIM115 - closed by the with block below
+        with out:
+            for path, name, is_dir in _members(srcs):
+                if control:
+                    control.checkpoint()
+                if stats:
+                    stats.current = path.name
+                try:
+                    if is_zip and is_dir:
+                        out.write(path, name + "/")
+                    elif is_zip:
+                        info = zipfile.ZipInfo.from_file(path, name)
+                        info.compress_type = zipfile.ZIP_DEFLATED
+                        with open(path, "rb") as fin, out.open(info, "w", force_zip64=True) as fout:
+                            reader = _Counting(fin, stats, control)
+                            while chunk := reader.read(CHUNK):
+                                fout.write(chunk)
+                    else:
+                        info = out.gettarinfo(str(path), name)
+                        if is_dir:
+                            out.addfile(info)
+                        else:
+                            with open(path, "rb") as fin:
+                                out.addfile(info, _Counting(fin, stats, control))
+                except OSError as e:
+                    if on_error is None:
+                        raise
+                    on_error(path, e)
+                    continue
+                if stats and not is_dir:
+                    stats.done_items += 1
+        os.replace(part, dst)
+    except BaseException:
+        with suppress(OSError):
+            part.unlink()
+        raise
+    ops.invalidate_size_cache(dst)

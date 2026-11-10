@@ -20,9 +20,10 @@ src/commander/
   shell.py          # Finder/탐색기에서 보기, 터미널 열기 (UI 비의존)
   transfer.py       # 로컬 복사/이동 엔진: 바이트 진행률(Stats), 일시정지/취소(Control), 폴더 병합, 임시 파일 경유 교체 (UI 비의존)
   queue_panel.py    # 하단 큐 패널: 백그라운드 Job별 진행률·속도·남은 시간, Pause/Cancel
-  archive.py        # zip/tar(.gz/.bz2/.xz) 읽기 전용 탐색 및 추출 (UI 비의존)
+  archive.py        # zip/tar(.gz/.bz2/.xz) 탐색·추출·생성(create) (UI 비의존)
   remote.py         # FtpClient, SftpClient (동일 메서드 인터페이스, UI 비의존)
-  rename.py         # 일괄 이름 변경 계획(plan) 및 임시 이름 경유 적용(apply)
+  rename.py         # 다중 이름 변경 계획(plan / plan_names: 마스크·카운터·대소문자) 및 임시 이름 경유 적용(apply)
+  rename_dialog.py  # F2 다중 이름 변경 대화상자 (실시간 미리보기)
   search.py         # 글롭/부분 문자열 재귀 파일 검색 제너레이터, 파일 내용 검색(contains)
   checksum.py       # SHA-256/SHA-1/MD5 계산, 체크섬 목록 작성·파싱·검증 (UI 비의존)
   compare.py        # 폴더 비교(differing_names), 파일 동일성, 줄 단위 좌우 정렬 diff (UI 비의존)
