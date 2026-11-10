@@ -289,19 +289,19 @@ def test_command_line_runs_in_folder_and_shows_output(tmp_path, monkeypatch):
     py = f'"{sys.executable}"'
     cmd = f"{py} -c \"import os; print(os.path.basename(os.getcwd())); open('made.txt', 'w').close()\""
     win.run_command_line(cmd)
-    _idle(win)
+    _wait(lambda: not win.busy(), 60000)  # starting a process can be slow on CI
     assert shown == [(f"$ {cmd}", "a")] and (a / "made.txt").exists()
 
     win.run_command_line(f'{py} -c "pass"')  # silent success: no dialog
-    _idle(win)
+    _wait(lambda: not win.busy(), 60000)  # starting a process can be slow on CI
     assert len(shown) == 1
     win.run_command_line(f'{py} -c "import sys; sys.exit(3)"')  # failure is always reported
-    _idle(win)
+    _wait(lambda: not win.busy(), 60000)  # starting a process can be slow on CI
     assert len(shown) == 2
 
     win.run_command_line(f'{py} -c "import time; time.sleep(60)"')
     job = win.jobs[0]
-    _wait(lambda: job.isRunning())
+    _wait(lambda: job.isRunning(), 60000)
     win.queue.row(job).cancel_btn.click()  # cancelling kills the process
-    _idle(win)
+    _wait(lambda: not win.busy(), 60000)  # starting a process can be slow on CI
     assert len(shown) == 2 and job.cancelled

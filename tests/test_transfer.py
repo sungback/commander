@@ -20,7 +20,7 @@ def tree(tmp_path):
 
 
 def _files(root):
-    return sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file())
+    return sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file())
 
 
 def test_copy_reports_bytes_and_keeps_metadata(tree):

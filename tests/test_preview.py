@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -34,7 +35,18 @@ def test_text_reader_never_splits_characters(tmp_path):
     parts = []
     while not reader.eof:
         parts.append(reader.read(7))  # 7 bytes never lands on a 3-byte boundary twice running
-    assert "".join(parts) == text and "�" not in "".join(parts)
+    assert "".join(parts) == text and "\ufffd" not in "".join(parts)
+
+
+def test_text_reader_translates_crlf_even_across_pieces(tmp_path):
+    f = tmp_path / "win.txt"
+    f.write_bytes(b"one\r\ntwo\r\nthree\rfour\n")
+    for size in (1, 4, 5, 100):  # 4 and 5 cut right through a CR LF pair
+        reader = preview.TextReader(f, "utf-8-sig")
+        parts = []
+        while not reader.eof:
+            parts.append(reader.read(size))
+        assert "".join(parts) == "one\ntwo\nthree\nfour\n", size
 
 
 def test_large_text_is_paged(tmp_path, monkeypatch):
@@ -189,7 +201,7 @@ def test_flat_view_lists_subtree_and_keeps_file_operations(tmp_path, monkeypatch
     left.view.setCurrentIndex(left.view.selectionModel().selectedRows(0)[0])
     assert left.current_local_path() == a / "sub" / "one.txt"
     QTest.keyClick(left.view, Qt.Key_Return)
-    assert opened == [str(a / "sub" / "one.txt")]
+    assert [Path(x) for x in opened] == [a / "sub" / "one.txt"]
 
     left.select_names({j("sub", "one.txt"), j("sub", "deep", "two.log")})
     assert left.selected_paths() == [a / "sub" / "one.txt", a / "sub" / "deep" / "two.log"]

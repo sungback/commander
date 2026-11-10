@@ -1,5 +1,6 @@
 """File content helpers for the viewer and Quick View (UI-independent)."""
 import codecs
+import io
 from pathlib import Path
 
 TEXT_CHUNK = 256 * 1024
@@ -46,7 +47,10 @@ class TextReader:
 
     def __init__(self, path: Path, encoding: str):
         self._f = open(path, "rb")  # noqa: SIM115 - closed by close()
-        self._decoder = codecs.getincrementaldecoder(encoding)(errors="replace")
+        # Newlines are translated like text mode does, so CRLF files never show stray '\r'
+        # (also when a CRLF pair is split across two pieces).
+        self._decoder = io.IncrementalNewlineDecoder(
+            codecs.getincrementaldecoder(encoding)(errors="replace"), translate=True)
         self.eof = False
 
     def read(self, size: int = TEXT_CHUNK) -> str:

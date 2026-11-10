@@ -315,7 +315,7 @@ def test_enter_opens_file_with_default_app(tmp_path, monkeypatch):
     monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url.toLocalFile()) or True)
     _select_file(win)
     QTest.keyClick(win.panels[0].view, Qt.Key_Return)
-    assert opened == [str(a / "f.txt")]
+    assert [Path(x) for x in opened] == [a / "f.txt"]  # Qt reports forward slashes on Windows
     assert win.panels[0].current_path() == str(a)
 
 
