@@ -3,6 +3,7 @@ import json
 import sys
 from contextlib import suppress
 from ctypes import util
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -36,12 +37,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import __version__, archive, ops, rename, shell, updater
+from . import __version__, archive, ops, rename, shell, transfer, updater
 from .panel import FilePanel
+from .queue_panel import QueuePanel
 from .remote import FtpClient, SftpClient
 from .search_dialog import SearchDialog
 from .viewer import ViewerDialog
-from .workers import UpdateCheckWorker, UpdateDownloadWorker, Worker
+from .workers import Job, UpdateCheckWorker, UpdateDownloadWorker, Worker
 
 STATE_FILE = Path.home() / ".config" / "commander" / "state.json"
 
@@ -52,7 +54,10 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("commander")
         self.setWindowIcon(app_icon())
         self.resize(1100, 650)
-        self._worker: Worker | None = None
+        self._worker: Worker | None = None  # modal task (remote transfers)
+        self.jobs: list[Job] = []  # non-modal background jobs shown in the queue panel
+        self._conflicts: list[tuple[Job, str, str]] = []
+        self._asking = False
         self._update_worker: UpdateCheckWorker | UpdateDownloadWorker | None = None
         self._state_file = state_file
         self._active = 0
@@ -92,7 +97,9 @@ class MainWindow(QMainWindow):
         root_layout = QVBoxLayout(central)
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(2)
+        self.queue = QueuePanel()
         root_layout.addWidget(self.splitter, 1)
+        root_layout.addWidget(self.queue)
         root_layout.addWidget(self.fn_bar)
         self.setCentralWidget(central)
         help_menu = self.menuBar().addMenu("도움말")
@@ -178,7 +185,58 @@ class MainWindow(QMainWindow):
                 self._active = active
                 self.panels[active].view.setFocus()
 
+    def busy(self) -> bool:
+        return bool(self.jobs) or self._worker is not None
+
+    def start_job(self, title: str, run_fn, total_items: int = 0) -> Job:
+        """Run `run_fn(job)` in the background; it appears in the queue panel until it ends."""
+        job = Job(title, run_fn, total_items, self)
+        job.conflict.connect(self._on_job_conflict)
+        job.finished.connect(lambda: self._job_finished(job))
+        self.jobs.append(job)
+        self.queue.add(job)
+        job.start()
+        return job
+
+    def _job_finished(self, job: Job) -> None:
+        if job not in self.jobs:
+            return
+        self.jobs.remove(job)
+        self.queue.remove(job)
+        self._conflicts = [c for c in self._conflicts if c[0] is not job]
+        errors = job.errors
+        job.deleteLater()
+        if errors:
+            shown = "\n".join(errors[:10])
+            more = f"\n... (+{len(errors) - 10} more)" if len(errors) > 10 else ""
+            QMessageBox.warning(self, job.title, f"{len(errors)} item(s) failed:\n\n{shown}{more}")
+
+    def _on_job_conflict(self, job: Job, src: str, dst: str) -> None:
+        """Answer jobs' conflict questions one dialog at a time, even when several jobs ask."""
+        self._conflicts.append((job, src, dst))
+        if self._asking:
+            return
+        self._asking = True
+        try:
+            while self._conflicts:
+                job, src, dst = self._conflicts.pop(0)
+                if job.cancelled or job not in self.jobs:
+                    continue
+                answer = self._ask_conflict(dst, None, True, _conflict_detail(Path(src), Path(dst)))
+                job.answer(*(answer or (None, False)))
+        finally:
+            self._asking = False
+
     def closeEvent(self, event) -> None:
+        if self.jobs:
+            if not self._ask("Quit", f"{len(self.jobs)} background job(s) are still running.\n"
+                                     "Cancel them and quit?"):
+                event.ignore()
+                return
+            for job in list(self.jobs):
+                job.cancel()
+            for job in list(self.jobs):
+                job.wait(5000)
         self.save_state()
         ops.save_size_cache()
         super().closeEvent(event)
@@ -317,7 +375,6 @@ class MainWindow(QMainWindow):
             self._error(ValueError("archives are read-only; use F5 to extract"))
             return
         refresh = None
-        allow_rename = False
         if dst_panel.in_remote:
             client, dst = dst_panel.remote, dst_panel.remote_path
             srcs = src_panel.selected_paths()
@@ -342,9 +399,6 @@ class MainWindow(QMainWindow):
             dst = Path(dst_panel.current_path())
             arc, srcs = src_panel.archive, src_panel.archive_selection()
             names = [e.rsplit("/", 1)[-1] for e in srcs]
-
-            def fn(srcs, dst, overwrite, progress):
-                archive.extract(arc, srcs, dst, overwrite=overwrite, progress=progress)
             verb = "Extract"
         else:
             self._transfer_local(src_panel.selected_paths(), Path(dst_panel.current_path()), move)
@@ -357,39 +411,40 @@ class MainWindow(QMainWindow):
             conflicts = [n for n in names if n in taken]
         else:
             conflicts = [n for n in names if (dst / n).exists() or (dst / n).is_symlink()]
-        decisions = self._resolve_conflicts(conflicts, allow_rename)
+        decisions = self._resolve_conflicts(conflicts, allow_rename=False)
         if decisions is None:
             return
         srcs = [s for s, n in zip(srcs, names, strict=True) if decisions.get(n) != "skip"]
         if not srcs:
             return
         overwrite = "overwrite" in decisions.values()
+        if src_panel.in_archive:
+            self.start_job(
+                f"Extract {len(srcs)} item(s) to {dst}",
+                lambda job: archive.extract(arc, srcs, dst, overwrite=overwrite, progress=job.on_item),
+                total_items=len(srcs))
+            return
+        # Remote transfers stay modal: an FTP/SFTP connection cannot be shared with browsing.
         self._run_task(verb, len(srcs),
                        lambda progress: fn(srcs, dst, overwrite=overwrite, progress=progress),
                        on_done=refresh)
 
     def _transfer_local(self, srcs: list[Path], dst: Path, move: bool) -> None:
-        """Copy/move local paths into the local folder `dst` (F5/F6 and drag & drop)."""
+        """Copy/move local paths into the local folder `dst` (F5/F6 and drag & drop).
+
+        Runs as a background job; existing folders are merged and each conflicting file is
+        asked about when the job reaches it.
+        """
         if not srcs:
             return
         verb = "Move" if move else "Copy"
         if not self._ask(verb, f"{verb} {len(srcs)} item(s) to\n{dst}?"):
             return
-        conflicts = [s.name for s in srcs if (dst / s.name).exists() or (dst / s.name).is_symlink()]
-        decisions = self._resolve_conflicts(conflicts, allow_rename=True)
-        if decisions is None:
-            return
-        srcs = [s for s in srcs if decisions.get(s.name) != "skip"]
-        if not srcs:
-            return
-        fn = ops.move if move else ops.copy
-        errors: list[str] = []
-        self._run_task(
-            verb, len(srcs),
-            lambda progress: fn(srcs, dst, progress=progress,
-                                on_conflict=lambda s, d: decisions.get(s.name, ""),
-                                on_error=_collector(errors)),
-            errors=errors)
+        self.start_job(
+            f"{verb} {len(srcs)} item(s) to {dst}",
+            lambda job: transfer.transfer(srcs, dst, move=move, on_conflict=job.ask,
+                                          on_error=job.on_error, stats=job.stats,
+                                          control=job.control))
 
     def _resolve_conflicts(self, names: list[str], allow_rename: bool) -> dict[str, str] | None:
         """Ask what to do with each already-existing name; None means the user cancelled."""
@@ -405,21 +460,26 @@ class MainWindow(QMainWindow):
             decisions[name] = choice
         return decisions
 
-    def _ask_conflict(self, name: str, remaining: int, allow_rename: bool) -> tuple[str, bool] | None:
-        """(choice, apply_to_all) with choice in overwrite/skip/rename, or None to cancel."""
+    def _ask_conflict(self, name: str, remaining: int | None, allow_rename: bool,
+                      detail: str = "") -> tuple[str, bool] | None:
+        """(choice, apply_to_all) with choice in overwrite/skip/rename, or None to cancel.
+
+        `remaining` is how many more conflicts are known; None when that is not known yet.
+        """
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Question)
         box.setWindowTitle("Already exists")
         box.setText(f"'{name}' already exists in the destination.")
-        box.setInformativeText("Overwrite replaces the existing item (a folder is replaced entirely).")
+        box.setInformativeText(detail or "Overwrite replaces the existing item.")
         buttons = {box.addButton("Overwrite", QMessageBox.DestructiveRole): "overwrite",
                    box.addButton("Skip", QMessageBox.AcceptRole): "skip"}
         if allow_rename:
             buttons[box.addButton("Keep both", QMessageBox.AcceptRole)] = "rename"
         box.addButton(QMessageBox.Cancel)
         check = None
-        if remaining:
-            check = QCheckBox(f"Apply to all ({remaining} more)")
+        if remaining is None or remaining:
+            more = "" if remaining is None else f" ({remaining} more)"
+            check = QCheckBox(f"Apply to all{more}")
             box.setCheckBox(check)
         box.exec()
         choice = buttons.get(box.clickedButton())
@@ -427,8 +487,7 @@ class MainWindow(QMainWindow):
             return None
         return choice, bool(check and check.isChecked())
 
-    def _run_task(self, title: str, total: int, task, on_done=None,
-                  errors: list[str] | None = None) -> None:
+    def _run_task(self, title: str, total: int, task, on_done=None) -> None:
         if self._worker is not None:
             return  # one background task at a time
         dialog = QProgressDialog(title, "Cancel", 0, total, self)
@@ -445,10 +504,6 @@ class MainWindow(QMainWindow):
             dialog.deleteLater()
             worker.deleteLater()
             self._worker = None
-            if errors:
-                shown = "\n".join(errors[:10])
-                more = f"\n... (+{len(errors) - 10} more)" if len(errors) > 10 else ""
-                QMessageBox.warning(self, title, f"{len(errors)} item(s) failed:\n\n{shown}{more}")
             if on_done:
                 try:
                     on_done()
@@ -569,10 +624,10 @@ class MainWindow(QMainWindow):
         if not self._ask("Delete", question):
             return
         fn = ops.delete if permanent else ops.trash
-        errors: list[str] = []
-        self._run_task("Delete", len(paths),
-                       lambda progress: fn(paths, progress=progress, on_error=_collector(errors)),
-                       errors=errors)
+        verb = "Delete" if permanent else "Trash"
+        self.start_job(f"{verb} {len(paths)} item(s)",
+                       lambda job: fn(paths, progress=job.on_item, on_error=job.on_error),
+                       total_items=len(paths))
 
     def show_about(self) -> None:
         QMessageBox.information(self, "정보", f"commander v{__version__}")
@@ -677,11 +732,17 @@ _REVEAL_LABEL = {"darwin": "Finder에서 보기", "win32": "탐색기에서 보�
     sys.platform, "파일 관리자에서 보기")
 
 
-def _collector(errors: list[str]):
-    """ops `on_error` callback that records 'name: reason' lines for the summary dialog."""
-    def on_error(path: Path, e: Exception) -> None:
-        errors.append(f"{Path(path).name}: {type(e).__name__}: {e}")
-    return on_error
+def _conflict_detail(src: Path, dst: Path) -> str:
+    """Size and modification time of both sides, to help decide which one to keep."""
+    def info(p: Path) -> str:
+        try:
+            st = p.stat()
+        except OSError:
+            return "?"
+        when = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
+        return f"{'folder' if p.is_dir() else ops.format_size(st.st_size)}, {when}"
+
+    return f"Existing: {info(dst)}\nNew: {info(src)}\nFrom: {src.parent}"
 
 
 def _set_macos_app_name(name: str) -> None:

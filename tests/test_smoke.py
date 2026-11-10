@@ -47,7 +47,7 @@ def _wait(cond, timeout_ms=3000):
 
 
 def _idle(win):
-    _wait(lambda: win._worker is None)
+    _wait(lambda: not win.busy())
 
 
 def _setup(tmp_path, monkeypatch):

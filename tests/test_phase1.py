@@ -19,9 +19,10 @@ def test_conflict_skip_keep_both_and_cancel(tmp_path, monkeypatch):
     (b / "f.txt").write_text("old")
     _select_file(win)
 
-    monkeypatch.setattr(MainWindow, "_ask_conflict", lambda *_: None)  # cancel
+    monkeypatch.setattr(MainWindow, "_ask_conflict", lambda *_: None)  # cancel stops the job
     win.transfer(move=False)
-    assert win._worker is None and (b / "f.txt").read_text() == "old"
+    _idle(win)
+    assert (b / "f.txt").read_text() == "old"
 
     monkeypatch.setattr(MainWindow, "_ask_conflict", lambda *_: ("skip", False))
     win.transfer(move=True)
@@ -44,14 +45,15 @@ def test_conflict_apply_to_all_asks_once(tmp_path, monkeypatch):
     win.panels[0].view.selectAll()
     asked = []
 
-    def ask(self, name, remaining, allow_rename):
-        asked.append((name, remaining, allow_rename))
+    def ask(self, name, remaining, allow_rename, detail=""):
+        asked.append((remaining, allow_rename))
+        assert "Existing: 3 B" in detail and "New: 3 B" in detail
         return ("skip", True)
 
     monkeypatch.setattr(MainWindow, "_ask_conflict", ask)
     win.transfer(move=False)
     _idle(win)
-    assert len(asked) == 1 and asked[0][1:] == (2, True)
+    assert asked == [(None, True)]  # asked when the job reaches the first conflict
     assert [(b / n).read_text() for n in ("f.txt", "g.txt", "h.txt")] == ["old"] * 3
     assert (b / "only.txt").read_text() == "new"
 
@@ -404,7 +406,7 @@ def test_drag_and_drop_copies_and_moves(tmp_path, monkeypatch):
     # Dropping a file onto the folder it already lives in, or '..' itself, does nothing
     _drop(dst.view, [b / "f.txt", b / ".."], below_rows, move=True)
     QApplication.processEvents()
-    assert win._worker is None and (b / "f.txt").exists()
+    assert not win.busy() and (b / "f.txt").exists()
 
 
 def test_drop_is_rejected_in_archive_mode(tmp_path, monkeypatch):
@@ -416,7 +418,7 @@ def test_drop_is_rejected_in_archive_mode(tmp_path, monkeypatch):
     dst.set_path(str(d / "z.zip"))
     accepted, _action = _drop(dst.view, [a / "f.txt"], QPoint(5, 5))
     QApplication.processEvents()
-    assert not accepted and win._worker is None and (a / "f.txt").exists()
+    assert not accepted and not win.busy() and (a / "f.txt").exists()
 
 
 def test_shell_commands_per_platform(tmp_path):
@@ -430,3 +432,21 @@ def test_shell_commands_per_platform(tmp_path):
     assert shell.reveal_command(tmp_path, "linux") == ["xdg-open", str(tmp_path)]
     assert shell.terminal_command("darwin")[:3] == ["open", "-a", "Terminal"]
     assert shell.terminal_command("win32")[0] == "cmd.exe"
+
+
+def test_conflict_dialog_always_offers_apply_to_all_when_count_unknown(tmp_path, monkeypatch):
+    from PySide6.QtCore import QTimer
+
+    win, _a, _b = _win(tmp_path, monkeypatch)
+    monkeypatch.undo()
+    seen = []
+
+    def act():
+        box = QApplication.activeModalWidget()
+        seen.append((box.checkBox().text(), box.informativeText()))
+        box.checkBox().setChecked(True)
+        next(b for b in box.buttons() if b.text() == "Overwrite").click()
+
+    QTimer.singleShot(0, act)
+    assert win._ask_conflict("f.txt", None, True, "Existing: 1 B") == ("overwrite", True)
+    assert seen == [("Apply to all", "Existing: 1 B")]

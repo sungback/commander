@@ -18,6 +18,8 @@ src/commander/
   panel.py          # FilePanel, _Tab, _View(키·드래그 앤 드롭), _LocalModel, _SortProxy, 빠른 필터, 히스토리, 패턴 선택, 하단 상태 표시줄
   ops.py            # 로컬 복사/이동/삭제/휴지통/폴더 생성(충돌 정책 on_conflict·오류 계속 on_error)/폴더 용량 계산(dir_size)/크기 포맷 (UI 비의존)
   shell.py          # Finder/탐색기에서 보기, 터미널 열기 (UI 비의존)
+  transfer.py       # 로컬 복사/이동 엔진: 바이트 진행률(Stats), 일시정지/취소(Control), 폴더 병합, 임시 파일 경유 교체 (UI 비의존)
+  queue_panel.py    # 하단 큐 패널: 백그라운드 Job별 진행률·속도·남은 시간, Pause/Cancel
   archive.py        # zip/tar(.gz/.bz2/.xz) 읽기 전용 탐색 및 추출 (UI 비의존)
   remote.py         # FtpClient, SftpClient (동일 메서드 인터페이스, UI 비의존)
   rename.py         # 일괄 이름 변경 계획(plan) 및 임시 이름 경유 적용(apply)
@@ -25,7 +27,7 @@ src/commander/
   search_dialog.py  # Ctrl+F 검색 대화상자 (스트리밍 결과 + 선택 폴더 이동)
   updater.py        # GitHub Releases 최신 버전 조회, 에셋 다운로드·스테이징, 기존 앱 교체 및 재실행 (UI 비의존)
   viewer.py         # F3 뷰어 / F4 에디터 (1MB 이하 UTF-8만 편집 허용)
-  workers.py        # Worker(파일 작업), SearchWorker(검색), DirSizeWorker(폴더 용량), UpdateCheck/DownloadWorker
+  workers.py        # Job(큐에 표시되는 백그라운드 작업), Worker(모달 원격 전송), SearchWorker(검색), DirSizeWorker(폴더 용량), UpdateCheck/DownloadWorker
 packaging/
   launcher.py       # PyInstaller 진입점
   build_mac.sh      # commander.app / commander.zip / commander.dmg 빌드 스크립트
@@ -59,6 +61,8 @@ tests/              # 단위 및 오프스크린 UI 통합 테스트
    - `QFileSystemModel`은 비동기이므로 `rowsInserted`/`directoryLoaded`가 여러 번 발생한다. 이미 실행 중인 `DirSizeWorker`를 불필요하게 재시작하지 않는다.
    - `QThread`가 실행 중일 때 프로세스가 종료되면 `QThread: Destroyed while thread is still running (SIGABRT, exit 134)`가 발생하므로 백그라운드 워커는 `atexit` 또는 탭 닫기 시 안전하게 정리한다.
    - 64비트 바이트 크기를 Qt `Signal`로 전달할 때는 32비트 C++ `int` 오버플로를 피하기 위해 `Signal(str, object)`를 사용한다.
+   - `Job`의 진행 상황은 시그널로 보내지 않고 큐 패널 타이머가 `job.stats`를 폴링한다. 워커 스레드에서 사용자에게 물어야 할 때는 `Job.ask` → `conflict` 시그널 → UI 스레드의 `Job.answer` 경로만 사용한다 (워커 스레드에서 위젯·대화상자 직접 호출 금지).
+   - 원격(FTP/SFTP) 클라이언트는 스레드 안전하지 않으므로 탐색과 전송이 동시에 같은 연결을 쓰게 만들지 않는다 (현재 원격 전송만 모달인 이유).
    - 백그라운드 폴더 용량 스캔(`DirSizeWorker`)은 숨김 폴더(`.*`)를 건너뛰고, 1차 빠른 스캔(`max_dirs=60`) 후 대용량 폴더만 2차 정밀 스캔하여 체감 지연을 막는다.
 4. **보안 및 안전성**
    - 파괴적 파일 작업(삭제/덮어쓰기)은 확인 대화상자를 거치고, 테스트는 반드시 `tmp_path`에서만 수행한다.
