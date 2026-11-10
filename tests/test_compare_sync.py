@@ -100,7 +100,7 @@ def test_apply_mirror_trashes_extras_and_reports_errors(pair):
     items.append(Item("ghost.txt", None, None, TO_RIGHT))
     items.append(Item("../escape.txt", None, None, TO_RIGHT))
     sync.apply(items, left, right, trash=lambda paths: trashed.extend(paths),
-               on_error=lambda p, e: errors.append((str(p), type(e).__name__)))
+               on_error=lambda p, e: errors.append((p.as_posix(), type(e).__name__)))
     assert trashed == [right / "only_right.txt"]
     assert errors == [("ghost.txt", "FileNotFoundError"), ("../escape.txt", "ValueError")]
     assert (right / "clash.txt").read_text() == "aa"
