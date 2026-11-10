@@ -33,7 +33,9 @@ src/commander/
   dialogs.py        # 공용 TextDialog (결과 텍스트 표시·복사·저장)
   search_dialog.py  # Ctrl+F 검색 대화상자 (스트리밍 결과 + 선택 폴더 이동)
   updater.py        # GitHub Releases 최신 버전 조회, 에셋 다운로드·스테이징, 기존 앱 교체 및 재실행 (UI 비의존)
-  viewer.py         # F3 뷰어 / F4 에디터 (1MB 이하 UTF-8만 편집 허용)
+  viewer.py         # F3 뷰어(PreviewWidget 사용) / F4 에디터 (1MB 이하 UTF-8만 편집 허용)
+  preview.py        # 인코딩 판별, hex 덤프, 조각 단위 리더 (UI 비의존)
+  preview_widget.py # 텍스트/hex/이미지 미리보기 위젯 (F3 뷰어와 Quick View 공용)
   workers.py        # Job(큐에 표시되는 백그라운드 작업), Worker(모달 원격 전송), SearchWorker(검색), DirSizeWorker(폴더 용량), UpdateCheck/DownloadWorker
 packaging/
   launcher.py       # PyInstaller 진입점

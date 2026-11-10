@@ -298,6 +298,7 @@ class _Tab(QWidget):
         self.file_activated = None  # callback(Path): Enter / double-click on a local file
         self.context_requested = None  # callback(global QPoint): right-click in the list
         self.files_dropped = None  # callback(paths, target_dir, move): files dropped on the list
+        self.current_changed = None  # callback(): the cursor moved to another row
         self.path_bar.returnPressed.connect(lambda: self.set_path(self.path_bar.text()))
         self.drive_box.currentIndexChanged.connect(self._on_drive_selected)
 
@@ -550,6 +551,7 @@ class _Tab(QWidget):
         sel = self.view.selectionModel()
         if sel is not None:
             sel.selectionChanged.connect(lambda *_: self.update_status())
+            sel.currentChanged.connect(lambda *_: self.current_changed and self.current_changed())
 
     def _on_rows_changed(self, parent: QModelIndex, first: int, last: int) -> None:
         self._apply_pending_selection()
@@ -776,6 +778,15 @@ class _Tab(QWidget):
         elif self.file_activated:
             self.file_activated(Path(path))
 
+    def current_local_path(self) -> Path | None:
+        """Local path of the row under the cursor; None in archives / remotes and on '..'."""
+        if self.archive is not None or self.remote is not None:
+            return None
+        idx = self.view.currentIndex().siblingAtColumn(0)
+        if not idx.isValid() or self.model.fileName(idx) == "..":
+            return None
+        return Path(self.model.filePath(idx))
+
     def selection_labels(self) -> list[str]:
         """Copyable locations of the selection (or of the current folder when nothing is selected)."""
         if self.remote is not None:
@@ -793,6 +804,7 @@ class FilePanel(QWidget):
     file_activated = Signal(object)  # Path of a local file opened with Enter / double-click
     context_requested = Signal(object)  # global QPoint of a right-click in the list
     files_dropped = Signal(object, str, bool)  # paths, target folder, move
+    current_changed = Signal()  # cursor row, folder or tab changed
 
     def __init__(self, path: str):
         super().__init__()
@@ -800,6 +812,7 @@ class FilePanel(QWidget):
         self.tabs.setDocumentMode(True)
         self.tabs.setTabsClosable(True)
         self.tabs.tabCloseRequested.connect(self.close_tab)
+        self.tabs.currentChanged.connect(lambda _: self.current_changed.emit())
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.tabs)
@@ -840,6 +853,7 @@ class FilePanel(QWidget):
         tab.file_activated = self.file_activated.emit
         tab.context_requested = self.context_requested.emit
         tab.files_dropped = self.files_dropped.emit
+        tab.current_changed = self.current_changed.emit
         self.tabs.setCurrentIndex(self.tabs.addTab(tab, _title(path)))
         tab.view.setFocus()
 
@@ -950,6 +964,9 @@ class FilePanel(QWidget):
 
     def selection_labels(self) -> list[str]:
         return self._tab.selection_labels()
+
+    def current_local_path(self) -> Path | None:
+        return self._tab.current_local_path()
 
     def selected_paths(self) -> list[Path]:
         return self._tab.selected_paths()

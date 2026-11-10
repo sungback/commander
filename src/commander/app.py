@@ -41,6 +41,7 @@ from . import __version__, archive, checksum, compare, ops, rename, shell, sync,
 from .dialogs import TextDialog
 from .diff_dialog import DiffDialog
 from .panel import FilePanel
+from .preview_widget import PreviewWidget
 from .queue_panel import QueuePanel
 from .remote import FtpClient, SftpClient
 from .rename_dialog import RenameDialog
@@ -72,6 +73,7 @@ class MainWindow(QMainWindow):
         for p in self.panels:
             self.splitter.addWidget(p)
             p.file_activated.connect(self.open_default)
+            p.current_changed.connect(lambda: self._quick_side is not None and self._quick_timer.start())
             p.context_requested.connect(lambda pos, p=p: self.show_context_menu(p, pos))
             # Deferred: the confirmation dialog must not run inside the drag-and-drop event.
             p.files_dropped.connect(
@@ -102,6 +104,13 @@ class MainWindow(QMainWindow):
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(2)
         self.queue = QueuePanel()
+        self.quick = PreviewWidget()  # Quick View: takes the inactive panel's place while on
+        self.quick.hide()
+        self._quick_side: int | None = None
+        self._quick_timer = QTimer(self)
+        self._quick_timer.setSingleShot(True)
+        self._quick_timer.setInterval(60)
+        self._quick_timer.timeout.connect(self._update_quick)
         root_layout.addWidget(self.splitter, 1)
         root_layout.addWidget(self.queue)
         root_layout.addWidget(self.fn_bar)
@@ -113,6 +122,8 @@ class MainWindow(QMainWindow):
             ("sync", "폴더 동기화...", "Ctrl+Shift+S", self.sync_dirs),
             ("diff", "파일 내용 비교", "Ctrl+Shift+D", self.diff_files),
             ("pack", "압축 파일 만들기...", "Alt+F5", self.pack),
+            ("quick_view", "빠른 보기 (Quick View)", "Meta+Q" if sys.platform == "darwin" else "Ctrl+Q",
+             self.toggle_quick_view),
             ("checksum", "체크섬 계산...", "", self.checksum),
             ("verify", "체크섬 검증", "", self.verify_checksum),
         ):
@@ -315,7 +326,40 @@ class MainWindow(QMainWindow):
         self._favorites_menu().exec(bar.mapToGlobal(bar.rect().bottomLeft()))
 
     def switch_panel(self) -> None:
-        self.panels[1 - self.active_index()].view.setFocus()
+        if self._quick_side is None:  # with Quick View on, the other panel is not visible
+            self.panels[1 - self.active_index()].view.setFocus()
+
+    def toggle_quick_view(self) -> bool:
+        """Show a live preview of the file under the cursor in place of the inactive panel."""
+        if self._quick_side is None:
+            active = self.active_index()
+            self._active = active
+            self._quick_side = 1 - active
+            self.splitter.replaceWidget(self._quick_side, self.quick)
+            self.panels[self._quick_side].hide()
+            self.quick.show()
+            self.panels[active].view.setFocus()
+            self._update_quick()
+        else:
+            side, self._quick_side = self._quick_side, None
+            self._quick_timer.stop()
+            self.splitter.replaceWidget(side, self.panels[side])
+            self.quick.hide()
+            self.quick.show_message("")
+            self.panels[side].show()
+        return self._quick_side is not None
+
+    def _update_quick(self) -> None:
+        if self._quick_side is None:
+            return
+        panel = self.panels[1 - self._quick_side]
+        path = panel.current_local_path()
+        if path is not None:
+            self.quick.show_path(path)
+        elif panel.in_archive or panel.in_remote:
+            self.quick.show_message("압축 파일·원격 항목은 미리 볼 수 없습니다.\n먼저 로컬 폴더로 추출하거나 내려받으세요.")
+        else:
+            self.quick.show_message("")
 
     def toggle_hidden(self) -> bool:
         return self.panels[self.active_index()].toggle_hidden()
