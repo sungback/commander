@@ -1,7 +1,9 @@
 """GitHub Releases self-updater (UI-independent)."""
+import hashlib
 import json
 import os
 import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -16,6 +18,7 @@ from . import __version__
 
 REPO = "sungback/commander"
 API_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
+RELEASES_URL = f"https://github.com/{REPO}/releases/latest"
 MAC_ASSET = "commander.zip"
 WIN_ASSET = "commander-win64.zip"
 CHUNK_SIZE = 64 * 1024
@@ -33,6 +36,23 @@ class ReleaseInfo:
     download_url: str
     notes: str = ""
     html_url: str = ""
+    sha256: str = ""
+
+
+def ssl_context() -> ssl.SSLContext:
+    """TLS context that trusts the OS store plus the bundled certifi CA file.
+
+    PyInstaller 앱(및 python.org macOS 빌드)은 OpenSSL 기본 CA 경로가 비어 있어
+    `CERTIFICATE_VERIFY_FAILED`가 발생하므로 certifi 번들을 항상 함께 로드한다.
+    """
+    ctx = ssl.create_default_context()
+    try:
+        import certifi
+
+        ctx.load_verify_locations(cafile=certifi.where())
+    except (ImportError, OSError, ssl.SSLError):
+        pass
+    return ctx
 
 
 def parse_version(ver: str) -> tuple[int, ...]:
@@ -69,6 +89,11 @@ def resolve_install_target(
     if platform == "darwin":
         for parent in (exe, *exe.parents):
             if parent.name.lower().endswith(".app"):
+                if "AppTranslocation" in parent.parts:  # parts 비교: 경로 구분자에 의존하지 않는다
+                    raise RuntimeError(
+                        "commander.app이 임시 격리 위치에서 실행 중이라 교체할 수 없습니다. "
+                        "앱을 /Applications 폴더로 옮긴 뒤 다시 실행해 주세요."
+                    )
                 return parent
         return Path("/Applications/commander.app")
     if platform == "win32":
@@ -95,7 +120,7 @@ def fetch_latest_release(
             "User-Agent": f"commander/{__version__}",
         },
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib.request.urlopen(req, timeout=timeout, context=ssl_context()) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     tag = str(data.get("tag_name") or "").strip()
     ver_tuple = parse_version(tag)
@@ -104,6 +129,7 @@ def fetch_latest_release(
     for asset in assets:
         if asset.get("name") == asset_name:
             url = str(asset.get("browser_download_url") or "")
+            digest = str(asset.get("digest") or "")
             if url.startswith(("https://", "http://")):
                 return ReleaseInfo(
                     version=norm_ver,
@@ -112,6 +138,7 @@ def fetch_latest_release(
                     download_url=url,
                     notes=str(data.get("body") or "").strip(),
                     html_url=str(data.get("html_url") or ""),
+                    sha256=digest.removeprefix("sha256:").lower() if digest.startswith("sha256:") else "",
                 )
     raise ValueError(f"release {tag} does not contain asset {asset_name!r}")
 
@@ -141,12 +168,30 @@ def download_and_stage(
     timeout: float = 30.0,
 ) -> Path:
     """Download the release archive and extract it into a staging directory."""
-    stage_dir = Path(dest_dir) if dest_dir is not None else Path(tempfile.mkdtemp(prefix="commander_update_"))
+    if dest_dir is not None:
+        return _download_and_stage(info, Path(dest_dir), platform, progress, cancel, timeout)
+    stage_dir = Path(tempfile.mkdtemp(prefix="commander_update_"))
+    try:
+        return _download_and_stage(info, stage_dir, platform, progress, cancel, timeout)
+    except BaseException:
+        shutil.rmtree(stage_dir, ignore_errors=True)  # 실패·취소 시 받은 파일을 남기지 않는다
+        raise
+
+
+def _download_and_stage(
+    info: ReleaseInfo,
+    stage_dir: Path,
+    platform: str,
+    progress: Callable[[int, int], None] | None,
+    cancel: Callable[[], bool] | None,
+    timeout: float,
+) -> Path:
     stage_dir.mkdir(parents=True, exist_ok=True)
     archive_path = stage_dir / info.asset_name
 
     req = urllib.request.Request(info.download_url, headers={"User-Agent": f"commander/{__version__}"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    sha = hashlib.sha256()
+    with urllib.request.urlopen(req, timeout=timeout, context=ssl_context()) as resp:
         total = int(resp.headers.get("Content-Length") or 0)
         done = 0
         with archive_path.open("wb") as out:
@@ -157,12 +202,17 @@ def download_and_stage(
                 if not chunk:
                     break
                 out.write(chunk)
+                sha.update(chunk)
                 done += len(chunk)
                 if progress:
                     progress(done, total)
 
     if cancel and cancel():
         raise UpdateCancelled
+    if total and done != total:
+        raise ValueError(f"download incomplete: {done} of {total} bytes")
+    if info.sha256 and sha.hexdigest() != info.sha256:
+        raise ValueError("downloaded archive does not match the release SHA-256 digest")
 
     extract_dir = stage_dir / "extracted"
     if extract_dir.exists():
@@ -189,48 +239,103 @@ def download_and_stage(
     raise ValueError(f"unsupported platform: {platform!r}")
 
 
+def stage_root_of(staged: Path) -> Path:
+    """Return the staging root that `download_and_stage` created for `staged`.
+
+    교체 헬퍼와 `discard_staged`가 통째로 지우는 폴더이므로, 'extracted' 폴더의 부모만 인정한다.
+    """
+    staged = Path(staged).resolve()
+    for p in (staged, *staged.parents):
+        if p.name == "extracted":
+            return p.parent
+    raise ValueError(f"not a staged update path: {staged}")
+
+
+def discard_staged(staged: Path) -> None:
+    """Delete a staged update that will not be applied (e.g. cancelled after download)."""
+    with suppress(ValueError):
+        shutil.rmtree(stage_root_of(staged), ignore_errors=True)
+
+
+# $1=pid  $2=staged .app  $3=target .app  $4=staging root
+MAC_APPLY_SCRIPT = """\
+while kill -0 "$1" 2>/dev/null; do sleep 0.1; done
+bak="$3.old"
+rm -rf "$bak"
+if [ ! -e "$3" ] || mv "$3" "$bak"; then
+  if mv "$2" "$3"; then
+    rm -rf "$bak"
+  else
+    rm -rf "$3"
+    if [ -e "$bak" ]; then mv "$bak" "$3"; fi
+  fi
+fi
+open "$3"
+rm -rf "$4"
+"""
+
+WIN_APPLY_SCRIPT = """\
+param([int]$PidToWait, [string]$Staged, [string]$Target, [string]$StageRoot)
+Wait-Process -Id $PidToWait -ErrorAction SilentlyContinue
+$Backup = "$Target.old"
+if (Test-Path -LiteralPath $Backup) {
+  Remove-Item -LiteralPath $Backup -Recurse -Force -ErrorAction SilentlyContinue
+}
+$moved = -not (Test-Path -LiteralPath $Target)
+for ($i = 0; $i -lt 50 -and -not $moved; $i++) {
+  try {
+    Move-Item -LiteralPath $Target -Destination $Backup -Force -ErrorAction Stop
+    $moved = $true
+  } catch {
+    Start-Sleep -Milliseconds 200
+  }
+}
+if ($moved) {
+  try {
+    Copy-Item -LiteralPath $Staged -Destination $Target -Recurse -Force -ErrorAction Stop
+    Remove-Item -LiteralPath $Backup -Recurse -Force -ErrorAction SilentlyContinue
+  } catch {
+    Remove-Item -LiteralPath $Target -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $Backup) {
+      Move-Item -LiteralPath $Backup -Destination $Target -Force
+    }
+  }
+}
+Start-Process -FilePath (Join-Path $Target 'commander.exe')
+Remove-Item -LiteralPath $StageRoot -Recurse -Force -ErrorAction SilentlyContinue
+"""
+
+
 def apply_update_and_restart(
     staged: Path,
     target: Path,
     platform: str = sys.platform,
     pid: int | None = None,
 ) -> subprocess.Popen:
-    """Spawn a detached OS helper that waits for `pid` to exit, replaces `target`, and relaunches."""
+    """Spawn a detached OS helper that waits for `pid` to exit, swaps `target`, and relaunches.
+
+    기존 앱은 `<target>.old`로 옮겨 두었다가 새 버전 배치에 성공하면 지우고, 실패하면 되돌린다.
+    어느 경우든 마지막에 앱을 다시 실행하므로 교체 실패 시에도 기존 버전이 그대로 뜬다.
+    """
     cur_pid = os.getpid() if pid is None else pid
     staged = Path(staged).resolve()
     target = Path(target).resolve()
+    stage_root = stage_root_of(staged)
+    helper_cwd = tempfile.gettempdir()  # 교체 대상 폴더를 헬퍼의 cwd로 잡고 있지 않게 한다
 
     if platform == "darwin":
-        script = (
-            'while kill -0 "$1" 2>/dev/null; do sleep 0.1; done; '
-            'rm -rf "$3" && mv "$2" "$3" && open "$3"; '
-            'rm -rf "$4"'
-        )
-        stage_root = staged.parent.parent
         return subprocess.Popen(
-            ["/bin/sh", "-c", script, "commander-updater", str(cur_pid), str(staged), str(target), str(stage_root)],
+            ["/bin/sh", "-c", MAC_APPLY_SCRIPT, "commander-updater",
+             str(cur_pid), str(staged), str(target), str(stage_root)],
             start_new_session=True,
+            cwd=helper_cwd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
 
     if platform == "win32":
-        stage_root = staged.parent.parent
         ps_script = stage_root / "apply_update.ps1"
-        ps_script.write_text(
-            "param([int]$PidToWait, [string]$Staged, [string]$Target, [string]$StageRoot)\n"
-            "Wait-Process -Id $PidToWait -ErrorAction SilentlyContinue\n"
-            "Start-Sleep -Milliseconds 300\n"
-            "if (Test-Path $Target) {\n"
-            "  Get-ChildItem -Path $Target -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue\n"
-            "} else {\n"
-            "  New-Item -ItemType Directory -Force -Path $Target | Out-Null\n"
-            "}\n"
-            "Get-ChildItem -Path $Staged -Force | Copy-Item -Destination $Target -Recurse -Force\n"
-            "Start-Process -FilePath (Join-Path $Target 'commander.exe')\n"
-            "Remove-Item -Path $StageRoot -Recurse -Force -ErrorAction SilentlyContinue\n",
-            encoding="utf-8",
-        )
+        ps_script.write_text(WIN_APPLY_SCRIPT, encoding="utf-8")
         flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         return subprocess.Popen(
             [
@@ -249,6 +354,7 @@ def apply_update_and_restart(
                 str(stage_root),
             ],
             creationflags=flags,
+            cwd=helper_cwd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )

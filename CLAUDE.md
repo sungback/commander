@@ -14,7 +14,7 @@
 src/commander/
   __init__.py       # 패키지 버전 (`__version__`)
   __main__.py       # 진입점 (`python -m commander`)
-  app.py            # MainWindow, 단축키(Tab, Ctrl+T/W/F/N/H/., F2~F8), 하단 펑션키 바, 도움말/업데이트 메뉴, 앱 아이콘
+  app.py            # MainWindow, 단축키(Tab, Ctrl+T/W/F/N/H/., F2~F8), 하단 펑션키 바, 도움말 > 자동 업데이트(원클릭) 메뉴, 앱 아이콘
   panel.py          # FilePanel, _Tab, _View, _LocalModel, _SortProxy, 하단 상태 표시줄
   ops.py            # 로컬 복사/이동/삭제/폴더 생성/폴더 용량 계산(dir_size)/크기 포맷 (UI 비의존)
   archive.py        # zip/tar(.gz/.bz2/.xz) 읽기 전용 탐색 및 추출 (UI 비의존)
@@ -22,7 +22,7 @@ src/commander/
   rename.py         # 일괄 이름 변경 계획(plan) 및 임시 이름 경유 적용(apply)
   search.py         # 글롭/부분 문자열 재귀 파일 검색 제너레이터
   search_dialog.py  # Ctrl+F 검색 대화상자 (스트리밍 결과 + 선택 폴더 이동)
-  updater.py        # GitHub Releases 최신 버전 조회, 에셋 다운로드·스테이징, 기존 앱 교체 및 재실행 (UI 비의존)
+  updater.py        # GitHub Releases 최신 버전 조회, 에셋 다운로드·SHA-256 검증·스테이징, 기존 앱 교체(실패 시 롤백) 및 재실행 (UI 비의존)
   viewer.py         # F3 뷰어 / F4 에디터 (1MB 이하 UTF-8만 편집 허용)
   workers.py        # Worker(파일 작업), SearchWorker(검색), DirSizeWorker(폴더 용량), UpdateCheck/DownloadWorker
 packaging/
@@ -62,6 +62,11 @@ tests/              # 단위 및 오프스크린 UI 통합 테스트
 4. **보안 및 안전성**
    - 파괴적 파일 작업(삭제/덮어쓰기)은 확인 대화상자를 거치고, 테스트는 반드시 `tmp_path`에서만 수행한다.
    - 압축 해제 및 원격 파일명 처리 시 경로 탈출(`..`, `/`, `\`, `\0`)과 로컬 심볼릭 링크 덮어쓰기 공격을 차단한다.
+5. **자동 업데이트 (`updater.py`)**
+   - HTTPS 요청은 반드시 `updater.ssl_context()`를 넘긴다. PyInstaller 앱에는 OpenSSL 기본 CA가 없어 `certifi` 번들(`--collect-data certifi`) 없이는 `CERTIFICATE_VERIFY_FAILED`가 난다.
+   - `도움말 > 자동 업데이트` 메뉴 클릭은 추가 확인 없이 확인 → 다운로드 → 교체 → 재실행까지 진행하고, 앱 시작 시 백그라운드 확인만 새 버전이 있을 때 한 번 묻는다.
+   - 교체 헬퍼(`MAC_APPLY_SCRIPT` / `WIN_APPLY_SCRIPT`)는 기존 앱을 `<target>.old`로 옮긴 뒤 새 버전을 배치하고, 실패하면 되돌린 다음 어느 경우든 앱을 다시 실행한다.
+   - 새 버전을 배포하려면 `pyproject.toml`과 `src/commander/__init__.py`의 버전을 함께 올리고 `v*` 태그를 푸시한다 (`release.yml`이 에셋 업로드).
 
 ## 작업 및 커밋 규칙
 - **세션 시작/종료 시 `TASKS.md` 동기화 필수**: `/exit`로 나갔다가 다시 들어와도 즉시 맥락을 이어받을 수 있도록, 모든 작업을 마칠 때마다 `TASKS.md`에 작업 내용·최신 상태·커밋/릴리스 정보를 저장하고 같은 커밋에 포함한다.

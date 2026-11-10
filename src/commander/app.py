@@ -85,7 +85,7 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(self.fn_bar)
         self.setCentralWidget(central)
         help_menu = self.menuBar().addMenu("도움말")
-        self.check_update_action = QAction("업데이트 확인...", self)
+        self.check_update_action = QAction("자동 업데이트", self)
         self.check_update_action.setMenuRole(QAction.NoRole)
         self.check_update_action.triggered.connect(lambda: self.check_for_updates(silent_if_up_to_date=False))
         help_menu.addAction(self.check_update_action)
@@ -371,68 +371,130 @@ class MainWindow(QMainWindow):
     def show_about(self) -> None:
         QMessageBox.information(self, "정보", f"commander v{__version__}")
 
+    def _update_dialog(self, label: str) -> QProgressDialog:
+        dialog = QProgressDialog(label, "Cancel", 0, 0, self)  # 0~0: 진행률을 알기 전에는 바쁨 표시
+        dialog.setWindowTitle("자동 업데이트")
+        dialog.setWindowModality(Qt.WindowModal)
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.setValue(0)
+        return dialog
+
     def check_for_updates(self, silent_if_up_to_date: bool = False) -> None:
+        """새 릴리스를 확인하고, 있으면 다운로드 → 기존 앱 교체 → 재실행까지 이어서 수행한다.
+
+        메뉴 클릭(silent_if_up_to_date=False)은 추가 확인 없이 끝까지 진행하는 원클릭 업데이트이고,
+        앱 시작 시 백그라운드 확인(True)은 새 버전이 있을 때만 한 번 묻는다.
+        """
         if self._update_worker is not None:
             return
+        manual = not silent_if_up_to_date
+        if manual and self._worker is not None:
+            QMessageBox.information(
+                self, "자동 업데이트", "진행 중인 파일 작업이 끝난 뒤 다시 시도해 주세요."
+            )
+            return
+        dialog = self._update_dialog("최신 버전 확인 중...") if manual else None
         worker = UpdateCheckWorker(self)
 
-        def on_checked(info: updater.ReleaseInfo) -> None:
-            worker.deleteLater()
+        def finish() -> bool:
+            """Release the worker; return False if the user cancelled while checking."""
             self._update_worker = None
-            if updater.is_newer(info.version, __version__):
-                self._prompt_and_install_update(info)
-            elif not silent_if_up_to_date:
-                QMessageBox.information(
-                    self, "업데이트 확인", f"현재 최신 버전(v{__version__})을 사용 중입니다."
+            return dialog is None or not dialog.wasCanceled()
+
+        def close_dialog() -> None:
+            if dialog is not None:
+                dialog.hide()  # autoClose를 꺼 두었으므로 직접 숨긴다
+                dialog.deleteLater()
+
+        def on_checked(info: updater.ReleaseInfo) -> None:
+            proceed = finish()
+            if not proceed:
+                close_dialog()
+            elif not updater.is_newer(info.version, __version__):
+                close_dialog()
+                if manual:
+                    QMessageBox.information(
+                        self, "자동 업데이트", f"현재 최신 버전(v{__version__})을 사용 중입니다."
+                    )
+            elif manual:
+                self._install_update(info, dialog)
+            elif self._worker is None:
+                notes = f"\n\n{info.notes[:400]}" if info.notes else ""
+                msg = (
+                    f"새 버전 v{info.version}이 출시되었습니다 (현재 v{__version__})."
+                    f"{notes}\n\n지금 다운로드하여 기존 앱을 교체하고 다시 시작할까요?"
                 )
+                if self._ask("업데이트 발견", msg):
+                    self._install_update(info, None)
 
         def on_failed(msg: str) -> None:
-            worker.deleteLater()
-            self._update_worker = None
-            if not silent_if_up_to_date:
-                QMessageBox.critical(self, "업데이트 확인 실패", msg)
+            proceed = finish()
+            close_dialog()
+            if manual and proceed:
+                QMessageBox.critical(
+                    self, "업데이트 확인 실패", f"{msg}\n\n수동 다운로드: {updater.RELEASES_URL}"
+                )
 
         worker.checked.connect(on_checked)
         worker.failed.connect(on_failed)
+        # 결과 시그널 시점에는 run()이 아직 끝나지 않았을 수 있다. 스레드 종료 후에만 파괴한다.
+        worker.finished.connect(worker.deleteLater)
         self._update_worker = worker
         worker.start()
 
-    def _prompt_and_install_update(self, info: updater.ReleaseInfo) -> None:
-        notes = f"\n\n{info.notes[:400]}" if info.notes else ""
-        msg = (
-            f"새 버전 v{info.version}이 출시되었습니다 (현재 v{__version__})."
-            f"{notes}\n\n지금 다운로드하여 기존 앱을 교체하고 다시 시작할까요?"
-        )
-        if not self._ask("업데이트 발견", msg):
+    def _install_update(self, info: updater.ReleaseInfo, dialog: QProgressDialog | None) -> None:
+        """Download `info`, swap the installed app for it and restart — no further prompts."""
+
+        def close_dialog() -> None:
+            if dialog is not None:
+                dialog.hide()  # autoClose를 꺼 두었으므로 직접 숨긴다
+                dialog.deleteLater()
+
+        if self._update_worker is not None or self._worker is not None:
+            close_dialog()
             return
         try:
             target = updater.resolve_install_target()
         except RuntimeError as e:
+            close_dialog()
             QMessageBox.information(
-                self, "업데이트 안내", f"{e}\n\n릴리스 페이지: {info.html_url or info.download_url}"
+                self, "업데이트 안내", f"{e}\n\n릴리스 페이지: {info.html_url or updater.RELEASES_URL}"
             )
             return
 
-        dialog = QProgressDialog("업데이트 다운로드 중...", "Cancel", 0, 100, self)
-        dialog.setWindowTitle("업데이트 설치")
-        dialog.setWindowModality(Qt.WindowModal)
-        dialog.setMinimumDuration(0)
+        if dialog is None:
+            dialog = self._update_dialog("")
+        dialog.setLabelText(f"v{info.version} 다운로드 중...")
         worker = UpdateDownloadWorker(info, self)
 
         def on_progress(done: int, total: int) -> None:
-            if total > 0:
-                dialog.setValue(min(100, int(done * 100 / total)))
+            if dialog.wasCanceled():
+                return
+            if total > 0 and done >= total:
+                dialog.setRange(0, 0)
+                dialog.setLabelText(f"v{info.version} 설치 준비 중...")
+            elif total > 0:
+                dialog.setRange(0, 100)
+                dialog.setValue(int(done * 100 / total))
                 dialog.setLabelText(
-                    f"다운로드 중... ({ops.format_size(done)} / {ops.format_size(total)})"
+                    f"v{info.version} 다운로드 중... "
+                    f"({ops.format_size(done)} / {ops.format_size(total)})"
                 )
             else:
-                dialog.setLabelText(f"다운로드 중... ({ops.format_size(done)})")
+                dialog.setLabelText(f"v{info.version} 다운로드 중... ({ops.format_size(done)})")
+
+        def release() -> None:
+            close_dialog()
+            self._update_worker = None
 
         def on_staged(staged_path: Path) -> None:
-            dialog.reset()
-            dialog.deleteLater()
-            worker.deleteLater()
-            self._update_worker = None
+            cancelled = dialog.wasCanceled()  # 압축 해제 중 취소: 받은 파일만 버리고 교체하지 않는다
+            release()
+            if cancelled:
+                updater.discard_staged(staged_path)
+                return
             try:
                 self.save_state()
                 ops.save_size_cache()
@@ -441,27 +503,26 @@ class MainWindow(QMainWindow):
                 app = QApplication.instance()
                 if app is not None:
                     app.quit()
-            except OSError as e:
+            except (OSError, ValueError) as e:
                 self._error(e)
 
         def on_failed(err: str) -> None:
-            dialog.reset()
-            dialog.deleteLater()
-            worker.deleteLater()
-            self._update_worker = None
-            QMessageBox.critical(self, "업데이트 설치 실패", err)
+            release()
+            QMessageBox.critical(
+                self,
+                "업데이트 설치 실패",
+                f"{err}\n\n수동 다운로드: {info.html_url or updater.RELEASES_URL}",
+            )
 
         def on_finished() -> None:
-            if self._update_worker is worker:
-                dialog.reset()
-                dialog.deleteLater()
-                worker.deleteLater()
-                self._update_worker = None
+            if self._update_worker is worker:  # 취소됨: staged/failed 없이 종료
+                release()
 
         worker.progress.connect(on_progress)
         worker.staged.connect(on_staged)
         worker.failed.connect(on_failed)
         worker.finished.connect(on_finished)
+        worker.finished.connect(worker.deleteLater)
         dialog.canceled.connect(worker.cancel)
         self._update_worker = worker
         worker.start()
