@@ -233,20 +233,42 @@ def apply_update_and_restart(
         )
 
     if platform == "win32":
-        stage_root = staged.parent.parent
+        stage_root = staged.parent if staged.name == "extracted" else staged.parent.parent
         ps_script = stage_root / "apply_update.ps1"
         ps_script.write_text(
             "param([int]$PidToWait, [string]$Staged, [string]$Target, [string]$StageRoot)\n"
-            "Wait-Process -Id $PidToWait -ErrorAction SilentlyContinue\n"
-            "Start-Sleep -Milliseconds 300\n"
-            "if (Test-Path $Target) {\n"
-            "  Get-ChildItem -Path $Target -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue\n"
-            "} else {\n"
-            "  New-Item -ItemType Directory -Force -Path $Target | Out-Null\n"
+            "$logFile = Join-Path $Target 'commander_updater.log'\n"
+            "function Write-Log($msg) {\n"
+            "  $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'\n"
+            "  \"[$ts] $msg\" | Out-File -FilePath $logFile -Append -Encoding utf8 -ErrorAction SilentlyContinue\n"
             "}\n"
-            "Get-ChildItem -Path $Staged -Force | Copy-Item -Destination $Target -Recurse -Force\n"
-            "Start-Process -FilePath (Join-Path $Target 'commander.exe')\n"
-            "Remove-Item -Path $StageRoot -Recurse -Force -ErrorAction SilentlyContinue\n",
+            "Write-Log \"Update started. PID: $PidToWait, Staged: $Staged, Target: $Target\"\n"
+            "try {\n"
+            "  $proc = Get-Process -Id $PidToWait -ErrorAction SilentlyContinue\n"
+            "  if ($proc) { $proc.WaitForExit(10000) }\n"
+            "} catch { Write-Log \"Process wait exception: $_\" }\n"
+            "Start-Sleep -Seconds 1\n"
+            "Write-Log 'Copying files via robocopy...'\n"
+            "$process = Start-Process -FilePath 'robocopy.exe' -ArgumentList @($Staged, $Target, '/E', '/PURGE', '/R:10', '/W:1', '/NP', '/NDL') -Wait -NoNewWindow -PassThru\n"
+            "$exitCode = $process.ExitCode\n"
+            "Write-Log \"Robocopy finished with exit code $exitCode\"\n"
+            "if ($exitCode -ge 8) {\n"
+            "  Write-Log 'Robocopy error; attempting fallback copy...'\n"
+            "  Start-Sleep -Seconds 2\n"
+            "  Get-ChildItem -Path $Staged -Force | Copy-Item -Destination $Target -Recurse -Force -ErrorAction SilentlyContinue\n"
+            "}\n"
+            "$targetExe = Join-Path $Target 'commander.exe'\n"
+            "if (Test-Path $targetExe) {\n"
+            "  Write-Log \"Relaunching $targetExe...\"\n"
+            "  Start-Process -FilePath $targetExe\n"
+            "} else {\n"
+            "  Write-Log \"ERROR: $targetExe not found!\"\n"
+            "}\n"
+            "Start-Sleep -Seconds 2\n"
+            "if (Test-Path $StageRoot) {\n"
+            "  Remove-Item -Path $StageRoot -Recurse -Force -ErrorAction SilentlyContinue\n"
+            "}\n"
+            "Write-Log 'Update script finished.'\n",
             encoding="utf-8",
         )
         flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -262,9 +284,9 @@ def apply_update_and_restart(
                 "-File",
                 str(ps_script),
                 str(cur_pid),
-                str(staged),
-                str(target),
-                str(stage_root),
+                str(staged).rstrip("\\/"),
+                str(target).rstrip("\\/"),
+                str(stage_root).rstrip("\\/"),
             ],
             creationflags=flags,
             stdout=subprocess.DEVNULL,
