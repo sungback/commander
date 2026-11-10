@@ -89,7 +89,7 @@ def resolve_install_target(
     if platform == "darwin":
         for parent in (exe, *exe.parents):
             if parent.name.lower().endswith(".app"):
-                if "/AppTranslocation/" in str(parent):
+                if "AppTranslocation" in parent.parts:  # parts 비교: 경로 구분자에 의존하지 않는다
                     raise RuntimeError(
                         "commander.app이 임시 격리 위치에서 실행 중이라 교체할 수 없습니다. "
                         "앱을 /Applications 폴더로 옮긴 뒤 다시 실행해 주세요."

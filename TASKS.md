@@ -10,11 +10,11 @@
   - `v0.1.0`: macOS 초기 릴리스 (`commander.dmg`, `commander.zip` 수동 업로드 완료)
   - `v0.2.0`: Windows 지원 + 드라이브 선택(`QComboBox`) + GitHub Actions 멀티 플랫폼(`windows-latest`, `macos-latest`) 자동 빌드·릴리스 워크플로 적용
   - `v0.2.1`: 하단 펑션키 바(F2~F8), 숨김 파일 토글(`Ctrl+H`/`Ctrl+.`), 자동 업데이트(`updater.py` / 메뉴 & 백그라운드 확인) 기능 배포
-  - `v0.2.2` (**미배포**, 브랜치 `claude/adoring-newton-as47n7`): 업데이트 확인 시 `CERTIFICATE_VERIFY_FAILED` 수정(certifi 번들) + 원클릭 자동 업데이트. `main` 병합 후 `v0.2.2` 태그를 푸시해야 릴리스가 만들어진다
+  - `v0.2.2` (PR https://github.com/sungback/commander/pull/2 , 브랜치 `claude/adoring-newton-as47n7`): 업데이트 확인 시 `CERTIFICATE_VERIFY_FAILED` 수정(certifi 번들) + 원클릭 자동 업데이트. CI 통과 시 `main` 병합 후 `v0.2.2` 태그 푸시 예정 — 완료 여부는 Releases 페이지에서 확인
 - **즉시 실행/검증 명령**:
   - `./scripts/check.sh` — `ruff` + `pytest` + 실제 홈 디렉터리 오프스크린 스모크/성능 체크
   - `./scripts/run.sh` — 소스 직접 실행 (`--app` 옵션 시 `/Applications/commander.app` 재빌드·설치·실행)
-- **다음 예정 작업**: `v0.2.2` 브랜치를 `main`에 병합 → `v0.2.2` 태그 푸시(릴리스 자동 생성) → 실제 macOS/Windows 패키지에서 `도움말 > 자동 업데이트` 동작 확인. v0.2.1 설치본은 인증서 버그 때문에 스스로 업데이트하지 못하므로 v0.2.2는 한 번 수동 설치해야 한다
+- **다음 예정 작업**: PR #2 병합 → `v0.2.2` 태그 푸시(릴리스 자동 생성) → 실제 macOS/Windows 패키지에서 `도움말 > 자동 업데이트` 동작 확인. v0.2.1 설치본은 인증서 버그 때문에 스스로 업데이트하지 못하므로 v0.2.2는 한 번 수동 설치해야 한다
 
 ## MVP
 - [x] 스캐폴딩 (pyproject, venv, 진입점) — 19bb4eb
