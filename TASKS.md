@@ -10,12 +10,15 @@
   - `v0.1.0`: macOS 초기 릴리스 (`commander.dmg`, `commander.zip` 수동 업로드 완료)
   - `v0.2.0`: Windows 지원 + 드라이브 선택(`QComboBox`) + GitHub Actions 멀티 플랫폼(`windows-latest`, `macos-latest`) 자동 빌드·릴리스 워크플로 적용
   - `v0.2.1`: 하단 펑션키 바(F2~F8), 숨김 파일 토글(`Ctrl+H`/`Ctrl+.`), 자동 업데이트(`updater.py` / 메뉴 & 백그라운드 확인) 기능 배포
-  - `v0.3.0`: 로드맵 1~5단계(휴지통·충돌 처리, 전송 큐, 비교·동기화, 뷰어·압축 만들기·평면 보기, 설정·단축키 재정의·명령줄·다크 모드·한국어 UI). 브랜치 `claude/vigilant-davinci-dj4vyo`에서 PR 생성 후, PR의 Windows/macOS CI 통과를 확인하고 `v0.3.0` 태그 푸시 → `release.yml`이 빌드·업로드
+  - `v0.3.0`: 로드맵 1~5단계(휴지통·충돌 처리, 전송 큐, 비교·동기화, 뷰어·압축 만들기·평면 보기, 설정·단축키 재정의·명령줄·다크 모드·한국어 UI). PR #1로 `main`에 병합 완료. **릴리스 태그는 아직 미푸시**(위 "남은 일" 참고)
 - **즉시 실행/검증 명령**:
   - `./scripts/check.sh` — `ruff` + `pytest` + 실제 홈 디렉터리 오프스크린 스모크/성능 체크
   - `./scripts/run.sh` — 소스 직접 실행 (`--app` 옵션 시 `/Applications/commander.app` 재빌드·설치·실행)
-- **최근 완료**: 로드맵 **1~5단계 전체**, 버전 `v0.3.0`으로 올림. 6단계(원격 보강)는 사용자 결정으로 제외
-- **다음 예정 작업**: PR 병합은 사용자가 결정. 릴리스 후 실기기 확인 권장 — 헤드리스 테스트로는 검증 못 한 것: 실제 마우스 드래그 앤 드롭, OS 휴지통 이동, Finder/탐색기·터미널 실행, 네이티브 다크 모드, 메뉴 막대 단축키, 패키징된 앱의 Qt 한국어 번역(`qtbase_ko.qm`) 포함 여부
+- **최근 완료**: 로드맵 **1~5단계 전체**를 PR [sungback/commander#1](https://github.com/sungback/commander/pull/1)로 `main`에 병합(병합 커밋 `3f0fd09`, Windows/macOS CI 통과). 버전은 `v0.3.0`. 6단계(원격 보강)는 사용자 결정으로 제외
+- **남은 일 (사용자 직접 수행 필요)**: `v0.3.0` 릴리스 태그 푸시. 클라우드 세션에서는 태그 푸시가 403으로 거부되므로 본인 컴퓨터에서 실행한다:
+  `git checkout main && git pull origin main && git tag -a v0.3.0 -m "v0.3.0" && git push origin v0.3.0` → `release.yml`이 빌드·업로드
+- **다음 예정 작업**: 새 요청 대기. 릴리스 후 실기기 확인 권장 — 헤드리스 테스트로는 검증 못 한 것: 실제 마우스 드래그 앤 드롭, OS 휴지통 이동, Finder/탐색기·터미널 실행, 네이티브 다크 모드, 메뉴 막대 단축키, 패키징된 앱의 Qt 한국어 번역(`qtbase_ko.qm`) 포함 여부
+- **이 파일의 이번 갱신**은 병합 이후 커밋이라 브랜치 `claude/vigilant-davinci-dj4vyo`에만 있다(`main` 반영에는 새 PR 필요)
 
 ## 로드맵 (Total Commander / ForkLift 수준)
 사용자 확정: 1 → 2 → 3 → 4 → 5 순서로 끝까지 진행. **원격(FTP/SFTP) 보강(6단계)은 만들지 않는다.**
@@ -112,6 +115,7 @@
 - `ops.copy`/`ops.move`는 라이브러리 함수로 남아 있으나 UI는 더 이상 쓰지 않는다(로컬 전송은 `transfer.transfer`)
 - 같은 파일로의 덮어쓰기(양쪽 패널이 같은 폴더)는 `ops._target`이 거부한다 (이전에는 원본이 삭제될 수 있었음). 이때 Keep both는 복제본을 만든다
 - 휴지통: 테스트는 `tests/conftest.py`의 autouse 픽스처가 `ops._move_to_trash`를 가짜로 바꿔 실제 휴지통을 건드리지 않는다. 휴지통 이동 실패(지원 안 되는 볼륨 등)는 오류 요약에 표시되며 `Shift+F8`로 영구 삭제 가능
+- CI에서 배운 점: Windows는 경로 구분자가 `\`이고 `QUrl.toLocalFile()`은 `/`를 돌려주므로 테스트에서 경로는 `Path` 또는 `as_posix()`로 비교한다. 텍스트 파일은 CRLF일 수 있다. 프로세스를 띄우는 테스트는 대기 시간을 넉넉히 준다
 - 개발 환경(Linux 컨테이너): PySide6 실행에 `libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3` apt 패키지 필요
 - 압축: 링크/특수 멤버는 목록·추출에서 제외, 압축 안에서 F6/F8 및 압축 패널로의 복사는 거부
 - 설정 파일: 테스트의 `MainWindow()`는 `settings_file=None`이라 실제 `settings.json`을 읽거나 쓰지 않는다 (`main()`만 실제 경로 전달)
