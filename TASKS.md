@@ -11,6 +11,7 @@
   - `v0.2.0`: Windows 지원 + 드라이브 선택(`QComboBox`) + GitHub Actions 멀티 플랫폼(`windows-latest`, `macos-latest`) 자동 빌드·릴리스 워크플로 적용
   - `v0.2.1`: 하단 펑션키 바(F2~F8), 숨김 파일 토글(`Ctrl+H`/`Ctrl+.`), 자동 업데이트(`updater.py` / 메뉴 & 백그라운드 확인) 기능 배포
   - `v0.2.2` (PR https://github.com/sungback/commander/pull/2 , 브랜치 `claude/adoring-newton-as47n7`): 업데이트 확인 시 `CERTIFICATE_VERIFY_FAILED` 수정(certifi 번들) + 원클릭 자동 업데이트. CI 통과 시 `main` 병합 후 `v0.2.2` 태그 푸시 예정 — 완료 여부는 Releases 페이지에서 확인
+    - **2026-11-10 릴리스 시도**: 로컬에서 `v0.2.2` 주석 태그를 브랜치 HEAD(`1d3e7e2`)에 만들고 `git push origin v0.2.2`를 시도했으나 세션 git 프록시가 HTTP 403으로 거부(브랜치 외 ref 푸시 불가) → **태그 미푸시, 릴리스 미생성**. 로컬 클론에서 직접 `git tag -a v0.2.2 <커밋> -m v0.2.2 && git push origin v0.2.2` 하거나 PR #2 병합 후 `main`에서 태그. CI(check suite)는 통과
 - **즉시 실행/검증 명령**:
   - `./scripts/check.sh` — `ruff` + `pytest` + 실제 홈 디렉터리 오프스크린 스모크/성능 체크
   - `./scripts/run.sh` — 소스 직접 실행 (`--app` 옵션 시 `/Applications/commander.app` 재빌드·설치·실행)
