@@ -226,3 +226,12 @@ def test_ui_check_for_updates_flow(tmp_path, monkeypatch):
     while win._update_worker is not None:
         QTest.qWait(10)
     assert applied == [(staged_dir, target_dir)]
+
+
+def test_ssl_context_creates_valid_context():
+    import ssl
+
+    ctx = updater._ssl_context()
+    assert isinstance(ctx, ssl.SSLContext)
+    assert ctx.verify_mode != ssl.CERT_NONE
+

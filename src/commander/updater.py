@@ -2,6 +2,7 @@
 import json
 import os
 import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -81,6 +82,23 @@ def resolve_install_target(
     raise RuntimeError(f"자동 업데이트를 지원하지 않는 운영체제입니다: {platform}")
 
 
+def _ssl_context() -> ssl.SSLContext:
+    """Create an SSL context with trusted CA certificates, especially on macOS / packaged apps."""
+    cafile: str | None = None
+    try:
+        import certifi
+
+        cafile = certifi.where()
+    except (ImportError, OSError):
+        if sys.platform == "darwin" and Path("/etc/ssl/cert.pem").is_file():
+            cafile = "/etc/ssl/cert.pem"
+
+    if cafile and Path(cafile).is_file():
+        with suppress(ssl.SSLError, OSError):
+            return ssl.create_default_context(cafile=cafile)
+    return ssl.create_default_context()
+
+
 def fetch_latest_release(
     api_url: str = API_URL,
     platform: str = sys.platform,
@@ -95,7 +113,7 @@ def fetch_latest_release(
             "User-Agent": f"commander/{__version__}",
         },
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     tag = str(data.get("tag_name") or "").strip()
     ver_tuple = parse_version(tag)
@@ -146,7 +164,7 @@ def download_and_stage(
     archive_path = stage_dir / info.asset_name
 
     req = urllib.request.Request(info.download_url, headers={"User-Agent": f"commander/{__version__}"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
         total = int(resp.headers.get("Content-Length") or 0)
         done = 0
         with archive_path.open("wb") as out:
