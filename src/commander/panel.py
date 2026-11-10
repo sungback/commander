@@ -47,6 +47,9 @@ def name_matches(name: str, pattern: str) -> bool:
     return any(fnmatchcase(low, m) if any(c in m for c in "*?[") else m in low for m in masks)
 
 
+_HEADERS = ("이름", "크기", "종류", "수정한 날짜")
+
+
 class _LocalModel(QFileSystemModel):
     """QFileSystemModel that also displays calculated directory sizes."""
 
@@ -62,6 +65,11 @@ class _LocalModel(QFileSystemModel):
         idx = self.index(path, 1)
         if idx.isValid():
             self.dataChanged.emit(idx, idx, [Qt.DisplayRole])
+
+    def headerData(self, section: int, orientation, role: int = Qt.DisplayRole):
+        if orientation == Qt.Horizontal and role == Qt.DisplayRole and 0 <= section < len(_HEADERS):
+            return _HEADERS[section]
+        return super().headerData(section, orientation, role)
 
     def data(self, index: QModelIndex, role: int = Qt.DisplayRole):
         if role == Qt.DisplayRole and index.column() == 1 and self.isDir(index):
@@ -193,7 +201,7 @@ class _FilterEdit(QLineEdit):
     def __init__(self, tab: "_Tab"):
         super().__init__()
         self._tab = tab
-        self.setPlaceholderText("Filter (text or *.ext;*.md) — Esc to clear")
+        self.setPlaceholderText("필터 (텍스트 또는 *.ext;*.md) — Esc로 해제")
         self.setClearButtonEnabled(True)
         self.hide()
 
@@ -312,6 +320,7 @@ class _Tab(QWidget):
         self.remote_path = "/"
         self.local_dir = path  # last local folder, kept while browsing a remote
         self.flat = False  # local folder shown with all files of its subfolders in one list
+        self.hidden_columns: set[int] = set()  # column indexes hidden by the user's settings
         self._size_worker: DirSizeWorker | None = None
         self._pending_cur: str | None = None
         self._pending_sel: set[str] = set()
@@ -463,7 +472,7 @@ class _Tab(QWidget):
             try:
                 self.open_archive(p)
             except (OSError, ValueError) as e:
-                QMessageBox.critical(self, "Error", f"{type(e).__name__}: {e}")
+                QMessageBox.critical(self, "오류", f"{type(e).__name__}: {e}")
             return
         if not p.is_dir():
             return
@@ -558,7 +567,7 @@ class _Tab(QWidget):
                    and name_matches(r[0], self.filter_text)]
         m = self.arch_model
         m.clear()
-        m.setHorizontalHeaderLabels(["Name", "Size"])
+        m.setHorizontalHeaderLabels(["이름", "크기"])
         for name, is_dir, size in [("..", True, 0)] + visible:
             item = QStandardItem(name)
             item.setData(is_dir, Qt.UserRole)
@@ -570,6 +579,7 @@ class _Tab(QWidget):
         self.view.setSortingEnabled(False)  # entries are pre-sorted, ".." first
         self.view.setModel(m)
         self._bind_selection()
+        self._apply_columns()
         self.path_bar.setText(bar)
         self.update_status()
         if self.path_changed:
@@ -592,6 +602,18 @@ class _Tab(QWidget):
         self.view.setSortingEnabled(True)
         self.view.sortByColumn(col, order)
         self.view.setColumnWidth(0, 260)
+        self._apply_columns()
+
+    def set_hidden_columns(self, hidden: set[int]) -> None:
+        self.hidden_columns = set(hidden)
+        self._apply_columns()
+
+    def _apply_columns(self) -> None:
+        """Header state is lost whenever the view's model is swapped, so this is re-applied."""
+        count = self.view.model().columnCount()
+        for col in range(1, max(count, 4)):
+            if col < count:
+                self.view.setColumnHidden(col, col in self.hidden_columns)
 
     def _bind_selection(self) -> None:
         sel = self.view.selectionModel()
@@ -717,7 +739,7 @@ class _Tab(QWidget):
         sel_rows = [i for i in self.view.selectionModel().selectedRows(0) if i.data() != ".."]
         sel_bytes = sum(self._entry_size(i) for i in sel_rows)
         self.status_bar.setText(
-            f"{len(sel_rows)} / {total_items} selected "
+            f"{len(sel_rows)} / {total_items}개 선택 "
             f"({ops.format_size(sel_bytes)} / {ops.format_size(total_bytes)})"
         )
 
@@ -751,9 +773,9 @@ class _Tab(QWidget):
                 i, QItemSelectionModel.Toggle | QItemSelectionModel.Rows)
 
     def prompt_select(self, select: bool = True) -> None:
-        title = "Select" if select else "Deselect"
+        title = "선택" if select else "선택 해제"
         pattern, ok = QInputDialog.getText(
-            self, title, "Mask (e.g. *.txt;*.md, or part of a name):", QLineEdit.Normal, "*")
+            self, title, "마스크 (예: *.txt;*.md 또는 이름 일부):", QLineEdit.Normal, "*")
         if ok and pattern.strip():
             self.select_pattern(pattern, select)
 
@@ -813,7 +835,7 @@ class _Tab(QWidget):
                 elif item.data(Qt.UserRole):
                     self.open_remote(self.remote, posixpath.join(self.remote_path, item.text()))
             except OSError as e:
-                QMessageBox.critical(self, "Error", f"{type(e).__name__}: {e}")
+                QMessageBox.critical(self, "오류", f"{type(e).__name__}: {e}")
             return
         if self.archive is not None:
             item = self.arch_model.itemFromIndex(idx.siblingAtColumn(0))
@@ -875,6 +897,7 @@ class FilePanel(QWidget):
         self.tabs.setTabsClosable(True)
         self.tabs.tabCloseRequested.connect(self.close_tab)
         self.tabs.currentChanged.connect(lambda _: self.current_changed.emit())
+        self._hidden_columns: set[int] = set()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.tabs)
@@ -911,7 +934,9 @@ class FilePanel(QWidget):
         if prev is not None:
             hdr = prev.view.header()
             tab.view.sortByColumn(hdr.sortIndicatorSection(), hdr.sortIndicatorOrder())
-        tab.path_changed = lambda p, t=tab: self.tabs.setTabText(self.tabs.indexOf(t), _title(p))
+        tab.path_changed = lambda p, t=tab: (
+            self.tabs.setTabText(self.tabs.indexOf(t), _title(p)), self.current_changed.emit())
+        tab.set_hidden_columns(self._hidden_columns)
         tab.file_activated = self.file_activated.emit
         tab.context_requested = self.context_requested.emit
         tab.files_dropped = self.files_dropped.emit
@@ -1029,6 +1054,11 @@ class FilePanel(QWidget):
 
     def current_local_path(self) -> Path | None:
         return self._tab.current_local_path()
+
+    def set_hidden_columns(self, hidden: set[int]) -> None:
+        self._hidden_columns = set(hidden)
+        for i in range(self.tabs.count()):
+            self.tabs.widget(i).set_hidden_columns(hidden)
 
     @property
     def flat(self) -> bool:

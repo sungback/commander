@@ -14,10 +14,14 @@
 src/commander/
   __init__.py       # 패키지 버전 (`__version__`)
   __main__.py       # 진입점 (`python -m commander`)
-  app.py            # MainWindow, 단축키(Tab, Ctrl+T/W/F/N/H/./S/D, Alt+←/→, F2~F8, Shift+F8), 충돌 대화상자, 즐겨찾기, 우클릭 메뉴, 하단 펑션키 바, 도움말/업데이트 메뉴, 앱 아이콘
+  app.py            # MainWindow: 명령 핸들러, 메뉴/단축키(QAction), 충돌 대화상자, 즐겨찾기, 우클릭 메뉴, 큐·Quick View·명령줄·도구 버튼·펑션키 바 배치, 설정 적용, 업데이트, 앱 아이콘
+  commands.py       # 명령 표: id·메뉴·기본 단축키 (플랫폼별), 단축키 충돌 검사 (UI 비의존)
+  settings.py       # 사용자 설정(settings.json) 로드/검증/저장 (UI 비의존)
+  settings_dialog.py# 설정 대화상자 (일반 / 단축키 / 사용자 도구)
+  theme.py          # 시스템/밝게/어둡게 테마 적용
   panel.py          # FilePanel, _Tab, _View(키·드래그 앤 드롭), _LocalModel, _SortProxy, 빠른 필터, 히스토리, 패턴 선택, 하단 상태 표시줄
   ops.py            # 로컬 복사/이동/삭제/휴지통/폴더 생성(충돌 정책 on_conflict·오류 계속 on_error)/폴더 용량 계산(dir_size)/크기 포맷 (UI 비의존)
-  shell.py          # Finder/탐색기에서 보기, 터미널 열기 (UI 비의존)
+  shell.py          # Finder/탐색기에서 보기, 터미널 열기, 사용자 도구 argv 구성, 명령줄 실행(run_capture) (UI 비의존)
   transfer.py       # 로컬 복사/이동 엔진: 바이트 진행률(Stats), 일시정지/취소(Control), 폴더 병합, 임시 파일 경유 교체 (UI 비의존)
   queue_panel.py    # 하단 큐 패널: 백그라운드 Job별 진행률·속도·남은 시간, Pause/Cancel
   archive.py        # zip/tar(.gz/.bz2/.xz) 탐색·추출·생성(create) (UI 비의존)
@@ -79,6 +83,12 @@ tests/              # 단위 및 오프스크린 UI 통합 테스트
    - 테스트는 실제 휴지통·외부 앱·외부 프로세스를 건드리지 않는다 (`tests/conftest.py`의 autouse 스텁을 우회하지 말 것).
    - 드롭 이벤트는 항상 `CopyAction`으로 응답한다 (이동은 앱이 직접 수행). 드래그 소스가 원본을 스스로 지우게 두지 않는다.
    - 압축 해제 및 원격 파일명 처리 시 경로 탈출(`..`, `/`, `\`, `\0`)과 로컬 심볼릭 링크 덮어쓰기 공격을 차단한다.
+
+5. **명령·단축키·문구**
+   - 새 명령은 `commands.py`의 표에 추가하고 `MainWindow.__init__`의 `handlers`에 연결한다. `QShortcut`을 직접 만들지 않는다 (설정의 단축키 재정의와 메뉴가 표를 기준으로 동작).
+   - macOS에서 Qt의 `Ctrl`은 Command 키다. `Cmd+Q`/`Cmd+M`/`Cmd+H`처럼 시스템이 쓰는 조합을 기본값으로 주지 않는다 (`test_default_shortcuts_are_unique_and_parse`가 검사).
+   - 사용자에게 보이는 UI 문구는 한국어로 쓴다. UI 비의존 모듈의 예외 메시지는 영어 그대로 둔다.
+   - 사용자 도구는 셸을 거치지 않고 인자 단위로 치환한다(`shell.tool_argv`). 셸 실행은 사용자가 명령줄에 직접 입력한 문자열에만 쓴다.
 
 ## 작업 및 커밋 규칙
 - **세션 시작/종료 시 `TASKS.md` 동기화 필수**: `/exit`로 나갔다가 다시 들어와도 즉시 맥락을 이어받을 수 있도록, 모든 작업을 마칠 때마다 `TASKS.md`에 작업 내용·최신 상태·커밋/릴리스 정보를 저장하고 같은 커밋에 포함한다.

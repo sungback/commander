@@ -14,7 +14,7 @@ def read_text(path: Path, strict: bool) -> str:
         data = f.read(MAX_BYTES + 1)
     if strict:
         if len(data) > MAX_BYTES:
-            raise ValueError("File too large to edit")
+            raise ValueError("파일이 너무 커서 편집할 수 없습니다 (1MB 초과)")
         return data.decode("utf-8")  # UnicodeDecodeError is a ValueError
     return data[:MAX_BYTES].decode("utf-8", errors="replace")
 
@@ -25,7 +25,7 @@ class ViewerDialog(QDialog):
     def __init__(self, path: Path, edit: bool, parent=None):
         super().__init__(parent)
         self.path = path
-        self.setWindowTitle(f"{'Edit' if edit else 'View'} - {path.name}")
+        self.setWindowTitle(f"{'편집' if edit else '보기'} - {path.name}")
         self.resize(900, 650)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -41,13 +41,13 @@ class ViewerDialog(QDialog):
             layout.addWidget(self.preview)
             # F3 toggles hex inside the viewer (H would collide with text search-as-you-type)
             QShortcut(QKeySequence("F3"), self, activated=self.preview.toggle_hex)
-            self.setWindowTitle(f"View - {path.name}  (F3: hex 전환)")
+            self.setWindowTitle(f"보기 - {path.name}  (F3: hex 전환)")
 
     def save(self) -> None:
         try:
             self.path.write_text(self.editor.toPlainText(), encoding="utf-8")
         except OSError as e:
-            QMessageBox.critical(self, "Error", f"{type(e).__name__}: {e}")
+            QMessageBox.critical(self, "오류", f"{type(e).__name__}: {e}")
             return
         self.editor.document().setModified(False)
 

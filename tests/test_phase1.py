@@ -47,7 +47,7 @@ def test_conflict_apply_to_all_asks_once(tmp_path, monkeypatch):
 
     def ask(self, name, remaining, allow_rename, detail=""):
         asked.append((remaining, allow_rename))
-        assert "Existing: 3 B" in detail and "New: 3 B" in detail
+        assert "기존 항목: 3 B" in detail and "새 항목: 3 B" in detail
         return ("skip", True)
 
     monkeypatch.setattr(MainWindow, "_ask_conflict", ask)
@@ -112,7 +112,7 @@ def test_failed_items_are_summarised_and_rest_continue(tmp_path, monkeypatch):
     win.delete()
     _idle(win)
     assert (a / "f.txt").exists() and not (a / "g.txt").exists()
-    assert len(warnings) == 1 and warnings[0].startswith("1 item(s) failed") and "f.txt" in warnings[0]
+    assert len(warnings) == 1 and warnings[0].startswith("1개 항목이 실패했습니다") and "f.txt" in warnings[0]
 
 
 def test_conflict_dialog_buttons(tmp_path, monkeypatch):
@@ -129,18 +129,21 @@ def test_conflict_dialog_buttons(tmp_path, monkeypatch):
             texts = [b.text() for b in box.buttons()]
             if check_all:
                 box.checkBox().setChecked(True)
-            next(b for b in box.buttons() if b.text() == label).click()
+            if label is None:
+                box.reject()  # Esc / Cancel
+            else:
+                next(b for b in box.buttons() if b.text() == label).click()
             seen.append(texts)
         QTimer.singleShot(0, act)
 
     seen = []
-    press("Keep both", True)
+    press("둘 다 유지", True)
     assert win._ask_conflict("f.txt", 2, True) == ("rename", True)
-    assert {"Overwrite", "Skip", "Keep both"} <= set(seen[-1])
-    press("Skip", False)
+    assert {"덮어쓰기", "건너뛰기", "둘 다 유지"} <= set(seen[-1])
+    press("건너뛰기", False)
     assert win._ask_conflict("f.txt", 0, False) == ("skip", False)
-    assert "Keep both" not in seen[-1]
-    press("Cancel", False)
+    assert "둘 다 유지" not in seen[-1]
+    press(None, False)
     assert win._ask_conflict("f.txt", 0, False) is None
 
 
@@ -174,7 +177,7 @@ def test_quick_filter_in_local_and_archive(tmp_path):
 
     p.set_filter("*.txt")
     assert _view_rows(p) == ["..", "a.txt", "b.txt"]
-    assert p.status_bar.text().startswith("0 / 2 selected")
+    assert p.status_bar.text().startswith("0 / 2개 선택")
     p.view.sortByColumn(0, Qt.DescendingOrder)
     assert _view_rows(p) == ["..", "b.txt", "a.txt"]
     p.view.sortByColumn(0, Qt.AscendingOrder)
@@ -445,8 +448,8 @@ def test_conflict_dialog_always_offers_apply_to_all_when_count_unknown(tmp_path,
         box = QApplication.activeModalWidget()
         seen.append((box.checkBox().text(), box.informativeText()))
         box.checkBox().setChecked(True)
-        next(b for b in box.buttons() if b.text() == "Overwrite").click()
+        next(b for b in box.buttons() if b.text() == "덮어쓰기").click()
 
     QTimer.singleShot(0, act)
-    assert win._ask_conflict("f.txt", None, True, "Existing: 1 B") == ("overwrite", True)
-    assert seen == [("Apply to all", "Existing: 1 B")]
+    assert win._ask_conflict("f.txt", None, True, "기존 항목: 1 B") == ("overwrite", True)
+    assert seen == [("모두 적용", "기존 항목: 1 B")]

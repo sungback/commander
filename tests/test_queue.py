@@ -36,12 +36,12 @@ def test_queue_row_progress_pause_resume(tmp_path, monkeypatch):
     row = win.queue.row(job)
     _wait(lambda: job.stats.done_items == 1)
     win.queue.refresh()
-    assert row.title.text() == "Demo job" and row.detail.text() == "1 / 2 item(s) — a"
+    assert row.title.text() == "Demo job" and row.detail.text() == "1 / 2개 항목 — a"
     assert (row.bar.maximum(), row.bar.value()) == (1000, 500)
 
     row.pause_btn.click()
-    assert job.control.paused and row.pause_btn.text() == "Resume"
-    assert row.detail.text().startswith("Paused — ")
+    assert job.control.paused and row.pause_btn.text() == "계속"
+    assert row.detail.text().startswith("일시정지 — ")
     gate.set()
     QApplication.processEvents()
     _wait(lambda: job.stats.done_items == 2)  # the next item is reported, then it blocks
@@ -70,18 +70,18 @@ def test_describe_bytes_speed_and_eta():
     QApplication.instance() or QApplication([])
     job = Job("x", lambda j: None)
     job.stats.scanning = True
-    assert describe(job) == (-1, "Preparing...")
+    assert describe(job) == (-1, "준비 중...")
     job.stats.scanning = False
     job.stats.total_bytes, job.stats.done_bytes, job.stats.current = 4 << 20, 1 << 20, "big.iso"
     assert describe(job, speed=float(1 << 20)) == (
-        250, "1.0 MB / 4.0 MB — 1.0 MB/s — 0:03 left — big.iso")
+        250, "1.0 MB / 4.0 MB — 1.0 MB/s — 0:03 남음 — big.iso")
     job.waiting = True
-    assert describe(job, speed=1.0)[1].startswith("Waiting for your answer — 1.0 MB / 4.0 MB — big")
+    assert describe(job, speed=1.0)[1].startswith("응답 대기 중 — 1.0 MB / 4.0 MB — big")
     job.waiting = False
     job.stats.done_bytes = 9 << 20  # never shown above 100%
     assert describe(job)[0] == 1000
     job.cancel()
-    assert describe(job) == (-1, "Cancelling...")
+    assert describe(job) == (-1, "취소하는 중...")
     assert [format_duration(s) for s in (0, 59.9, 61, 3725)] == ["0:00", "0:59", "1:01", "1:02:05"]
 
 

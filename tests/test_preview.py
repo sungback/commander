@@ -172,7 +172,7 @@ def test_flat_view_lists_subtree_and_keeps_file_operations(tmp_path, monkeypatch
     j = os.path.join
     assert left.flat and rows() == ["..", "f.txt", j("sub", "one.txt"), j("sub", "deep", "two.log")]
     assert left.current_path() == str(a) and "평면 보기" in left.path_bar.text()
-    assert left.status_bar.text() == "0 / 3 selected (0 B / 4 B)"
+    assert left.status_bar.text() == "0 / 3개 선택 (0 B / 4 B)"
     assert not left.in_archive and not left.in_remote
 
     left.set_filter("*.log")  # the quick filter works on the flat listing too

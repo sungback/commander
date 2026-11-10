@@ -29,9 +29,9 @@ class TextDialog(QDialog):
         self.view.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         buttons.rejected.connect(self.reject)
-        buttons.addButton("Copy", QDialogButtonBox.ActionRole).clicked.connect(self.copy)
+        buttons.addButton("복사", QDialogButtonBox.ActionRole).clicked.connect(self.copy)
         if save_as is not None:
-            buttons.addButton("Save...", QDialogButtonBox.ActionRole).clicked.connect(self.save)
+            buttons.addButton("저장...", QDialogButtonBox.ActionRole).clicked.connect(self.save)
         layout = QVBoxLayout(self)
         if summary:
             layout.addWidget(QLabel(summary))
@@ -42,10 +42,10 @@ class TextDialog(QDialog):
         QApplication.clipboard().setText(self.view.toPlainText())
 
     def save(self) -> None:
-        name, _ = QFileDialog.getSaveFileName(self, "Save", str(self._save_as))
+        name, _ = QFileDialog.getSaveFileName(self, "저장", str(self._save_as))
         if not name:
             return
         try:
             Path(name).write_text(self.view.toPlainText(), encoding="utf-8")
         except OSError as e:
-            QMessageBox.critical(self, "Error", f"{type(e).__name__}: {e}")
+            QMessageBox.critical(self, "오류", f"{type(e).__name__}: {e}")

@@ -29,23 +29,23 @@ def describe(job: Job, speed: float | None = None) -> tuple[int, str]:
     """(progress in permille, or -1 when unknown; status text) for a job."""
     st = job.stats
     if job.cancelled:
-        return -1, "Cancelling..."
+        return -1, "취소하는 중..."
     if st.scanning:
-        return -1, "Preparing..."
+        return -1, "준비 중..."
     if st.total_bytes > 0:
         done = min(st.done_bytes, st.total_bytes)
         parts = [f"{ops.format_size(done)} / {ops.format_size(st.total_bytes)}"]
         permille = int(done * 1000 / st.total_bytes)
         if speed and not job.control.paused and not job.waiting:
             parts.append(f"{ops.format_size(int(speed))}/s")
-            parts.append(f"{format_duration((st.total_bytes - done) / speed)} left")
+            parts.append(f"{format_duration((st.total_bytes - done) / speed)} 남음")
     else:
-        parts = [f"{st.done_items} / {st.total_items} item(s)"]
+        parts = [f"{st.done_items} / {st.total_items}개 항목"]
         permille = int(st.done_items * 1000 / st.total_items) if st.total_items else -1
     if job.waiting:
-        parts.insert(0, "Waiting for your answer")
+        parts.insert(0, "응답 대기 중")
     elif job.control.paused:
-        parts.insert(0, "Paused")
+        parts.insert(0, "일시정지")
     if st.current:
         parts.append(st.current)
     return permille, " — ".join(parts)
@@ -62,8 +62,8 @@ class _Row(QWidget):
         self.bar.setFixedHeight(10)
         self.detail = QLabel()
         self.detail.setTextInteractionFlags(Qt.NoTextInteraction)
-        self.pause_btn = QPushButton("Pause")
-        self.cancel_btn = QPushButton("Cancel")
+        self.pause_btn = QPushButton("일시정지")
+        self.cancel_btn = QPushButton("취소")
         for b in (self.pause_btn, self.cancel_btn):
             b.setFocusPolicy(Qt.NoFocus)
         self.pause_btn.clicked.connect(self.toggle_pause)
@@ -106,7 +106,7 @@ class _Row(QWidget):
             self.bar.setRange(0, 1000)
             self.bar.setValue(permille)
         self.detail.setText(text)
-        self.pause_btn.setText("Resume" if self.job.control.paused else "Pause")
+        self.pause_btn.setText("계속" if self.job.control.paused else "일시정지")
         self.pause_btn.setEnabled(not self.job.cancelled)
         self.cancel_btn.setEnabled(not self.job.cancelled)
 

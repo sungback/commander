@@ -150,7 +150,7 @@ def test_keyboard_navigation(tmp_path):
 
     # Background DirSizeWorker automatically populates folder size without pressing Space
     _wait(lambda: panel.model.index(row("sub").row(), 1, panel.view.rootIndex()).data() == "4 B")
-    assert "0 / 2 selected (0 B / 5 B)" == panel.status_bar.text()
+    assert "0 / 2개 선택 (0 B / 5 B)" == panel.status_bar.text()
 
     panel.view.setCurrentIndex(row("sub"))
     QTest.keyClick(panel.view, Qt.Key_Return)
@@ -164,11 +164,11 @@ def test_keyboard_navigation(tmp_path):
     panel.view.clearSelection()  # setCurrentIndex selects the row itself
     QTest.keyClick(panel.view, Qt.Key_Space)
     assert [p.name for p in panel.selected_paths()] == ["x.txt"]
-    assert "1 / 2 selected (1 B / 5 B)" == panel.status_bar.text()
+    assert "1 / 2개 선택 (1 B / 5 B)" == panel.status_bar.text()
     panel.view.setCurrentIndex(row("x.txt"))
     QTest.keyClick(panel.view, Qt.Key_Space)
     assert panel.selected_paths() == []
-    assert "0 / 2 selected (0 B / 5 B)" == panel.status_bar.text()
+    assert "0 / 2개 선택 (0 B / 5 B)" == panel.status_bar.text()
     app.processEvents()
 
 

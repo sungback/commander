@@ -11,12 +11,12 @@ class SearchDialog(QDialog):
     def __init__(self, root: Path, pattern: str, parent=None, text: str = ""):
         super().__init__(parent)
         self.chosen: Path | None = None
-        what = f"{pattern} containing '{text}'" if text else pattern
-        self.setWindowTitle(f"Search: {what} in {root}")
+        what = f"{pattern} ('{text}' 포함)" if text else pattern
+        self.setWindowTitle(f"검색: {what} — {root}")
         self.resize(700, 450)
         self.results = QListWidget()
         self.results.itemActivated.connect(self._choose)
-        self.stop = QPushButton("Stop")
+        self.stop = QPushButton("중지")
         self.stop.clicked.connect(self._stop)
         layout = QVBoxLayout(self)
         layout.addWidget(self.results)
@@ -33,8 +33,8 @@ class SearchDialog(QDialog):
     def _done(self) -> None:
         self.stop.setEnabled(False)
         n = self.results.count()
-        suffix = f" (limited to first {n})" if self.worker.truncated else ""
-        self.setWindowTitle(f"{self.windowTitle()} - {n} found{suffix}")
+        suffix = f" (처음 {n}개만 표시)" if self.worker.truncated else ""
+        self.setWindowTitle(f"{self.windowTitle()} - {n}개 찾음{suffix}")
 
     def _choose(self, item) -> None:
         self.chosen = Path(item.text())

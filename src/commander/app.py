@@ -1,5 +1,6 @@
 import ctypes
 import json
+import os
 import sys
 from contextlib import suppress
 from ctypes import util
@@ -7,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from PySide6.QtCore import QByteArray, QRectF, Qt, QTimer, QUrl
+from PySide6.QtCore import QByteArray, QLibraryInfo, QRectF, Qt, QTimer, QTranslator, QUrl
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -19,13 +20,13 @@ from PySide6.QtGui import (
     QPainterPath,
     QPen,
     QPixmap,
-    QShortcut,
 )
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QHBoxLayout,
     QInputDialog,
+    QLabel,
     QLineEdit,
     QMainWindow,
     QMenu,
@@ -37,7 +38,21 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import __version__, archive, checksum, compare, ops, rename, shell, sync, transfer, updater
+from . import (
+    __version__,
+    archive,
+    checksum,
+    compare,
+    ops,
+    rename,
+    settings,
+    shell,
+    sync,
+    theme,
+    transfer,
+    updater,
+)
+from .commands import default_commands, effective_shortcuts
 from .dialogs import TextDialog
 from .diff_dialog import DiffDialog
 from .panel import FilePanel
@@ -46,6 +61,7 @@ from .queue_panel import QueuePanel
 from .remote import FtpClient, SftpClient
 from .rename_dialog import RenameDialog
 from .search_dialog import SearchDialog
+from .settings_dialog import SettingsDialog
 from .sync_dialog import SyncDialog
 from .viewer import ViewerDialog
 from .workers import Job, UpdateCheckWorker, UpdateDownloadWorker, Worker
@@ -54,8 +70,12 @@ STATE_FILE = Path.home() / ".config" / "commander" / "state.json"
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, state_file: Path | None = None, auto_check_updates: bool = False):
+    def __init__(self, state_file: Path | None = None, auto_check_updates: bool = False,
+                 settings_file: Path | None = None):
         super().__init__()
+        self._settings_file = settings_file
+        self.settings = settings.load(settings_file)
+        self.commands = default_commands()
         self.setWindowTitle("commander")
         self.setWindowIcon(app_icon())
         self.resize(1100, 650)
@@ -74,19 +94,20 @@ class MainWindow(QMainWindow):
             self.splitter.addWidget(p)
             p.file_activated.connect(self.open_default)
             p.current_changed.connect(lambda: self._quick_side is not None and self._quick_timer.start())
+            p.current_changed.connect(self._update_prompt)
             p.context_requested.connect(lambda pos, p=p: self.show_context_menu(p, pos))
             # Deferred: the confirmation dialog must not run inside the drag-and-drop event.
             p.files_dropped.connect(
                 lambda paths, target, move: QTimer.singleShot(
                     0, lambda: self._transfer_local(list(paths), Path(target), move)))
         fn_specs = [
-            ("F2", "F2 Rename", self.batch_rename),
-            ("F3", "F3 View", lambda: self.open_file(edit=False)),
-            ("F4", "F4 Edit", lambda: self.open_file(edit=True)),
-            ("F5", "F5 Copy", lambda: self.transfer(move=False)),
-            ("F6", "F6 Move", lambda: self.transfer(move=True)),
-            ("F7", "F7 Mkdir", self.make_dir),
-            ("F8", "F8 Delete", self.delete),
+            ("F2", "F2 이름변경", self.batch_rename),
+            ("F3", "F3 보기", lambda: self.open_file(edit=False)),
+            ("F4", "F4 편집", lambda: self.open_file(edit=True)),
+            ("F5", "F5 복사", lambda: self.transfer(move=False)),
+            ("F6", "F6 이동", lambda: self.transfer(move=True)),
+            ("F7", "F7 새 폴더", self.make_dir),
+            ("F8", "F8 삭제", self.delete),
         ]
         self.fn_bar = QWidget()
         fn_layout = QHBoxLayout(self.fn_bar)
@@ -111,30 +132,55 @@ class MainWindow(QMainWindow):
         self._quick_timer.setSingleShot(True)
         self._quick_timer.setInterval(60)
         self._quick_timer.timeout.connect(self._update_quick)
+        self.tool_bar = QWidget()  # buttons for user-defined tools; hidden while there are none
+        tool_layout = QHBoxLayout(self.tool_bar)
+        tool_layout.setContentsMargins(2, 2, 2, 0)
+        tool_layout.setSpacing(4)
+        self.cmd_bar = QWidget()
+        cmd_layout = QHBoxLayout(self.cmd_bar)
+        cmd_layout.setContentsMargins(4, 0, 4, 0)
+        self.cmd_prompt = QLabel()
+        self.cmd_edit = _CommandEdit(self)
+        cmd_layout.addWidget(self.cmd_prompt)
+        cmd_layout.addWidget(self.cmd_edit, 1)
+        root_layout.addWidget(self.tool_bar)
         root_layout.addWidget(self.splitter, 1)
         root_layout.addWidget(self.queue)
+        root_layout.addWidget(self.cmd_bar)
         root_layout.addWidget(self.fn_bar)
         self.setCentralWidget(central)
-        self.tools_menu = self.menuBar().addMenu("도구")
+
+        handlers = {
+            "view": lambda: self.open_file(edit=False), "edit": lambda: self.open_file(edit=True),
+            "copy": lambda: self.transfer(move=False), "move": lambda: self.transfer(move=True),
+            "mkdir": self.make_dir, "rename": self.batch_rename, "delete": self.delete,
+            "delete_permanent": lambda: self.delete(permanent=True), "pack": self.pack,
+            "copy_path": self.copy_path, "switch_panel": self.switch_panel,
+            "back": lambda: self.panels[self.active_index()].go_back(),
+            "forward": lambda: self.panels[self.active_index()].go_forward(),
+            "favorites": self.show_favorites,
+            "filter": lambda: self.panels[self.active_index()].show_filter(),
+            "search": self.search, "toggle_hidden": self.toggle_hidden, "flat": self.toggle_flat,
+            "quick_view": self.toggle_quick_view,
+            "new_tab": lambda: self.panels[self.active_index()].new_tab(),
+            "close_tab": lambda: self.panels[self.active_index()].close_tab(),
+            "command_line": self.focus_command_line, "connect": self.connect_ftp,
+            "compare_dirs": self.compare_dirs, "sync": self.sync_dirs, "diff": self.diff_files,
+            "checksum": self.checksum, "verify": self.verify_checksum, "settings": self.open_settings,
+        }
         self.actions_by_name: dict[str, QAction] = {}
-        for name, label, shortcut, handler in (
-            ("compare_dirs", "폴더 비교 (다른 항목 선택)", "Shift+F2", self.compare_dirs),
-            ("sync", "폴더 동기화...", "Ctrl+Shift+S", self.sync_dirs),
-            ("diff", "파일 내용 비교", "Ctrl+Shift+D", self.diff_files),
-            ("pack", "압축 파일 만들기...", "Alt+F5", self.pack),
-            ("quick_view", "빠른 보기 (Quick View)", "Meta+Q" if sys.platform == "darwin" else "Ctrl+Q",
-             self.toggle_quick_view),
-            ("flat", "평면 보기 (하위 폴더 파일 모두 표시)", "Ctrl+B", self.toggle_flat),
-            ("checksum", "체크섬 계산...", "", self.checksum),
-            ("verify", "체크섬 검증", "", self.verify_checksum),
-        ):
-            act = QAction(label, self)
+        self.menus: dict[str, QMenu] = {}
+        for cmd in self.commands:
+            act = QAction(cmd.label, self)
             act.setMenuRole(QAction.NoRole)
-            if shortcut:
-                act.setShortcut(QKeySequence(shortcut))
-            act.triggered.connect(lambda _=False, h=handler: h())
-            self.tools_menu.addAction(act)
-            self.actions_by_name[name] = act
+            act.triggered.connect(lambda _=False, c=cmd.id, h=handlers[cmd.id]: self._run_command(c, h))
+            if cmd.menu not in self.menus:
+                self.menus[cmd.menu] = self.menuBar().addMenu(cmd.menu)
+            self.menus[cmd.menu].addAction(act)
+            self.addAction(act)  # keeps the shortcut alive even if the menu bar is hidden
+            self.actions_by_name[cmd.id] = act
+        self.tools_menu = self.menus["도구"]
+        self._tool_actions: list[QAction] = []
         help_menu = self.menuBar().addMenu("도움말")
         self.check_update_action = QAction("업데이트 확인...", self)
         self.check_update_action.setMenuRole(QAction.NoRole)
@@ -144,31 +190,7 @@ class MainWindow(QMainWindow):
         self.about_action.setMenuRole(QAction.NoRole)
         self.about_action.triggered.connect(self.show_about)
         help_menu.addAction(self.about_action)
-        QShortcut(QKeySequence("Tab"), self, activated=self.switch_panel)
-        QShortcut(QKeySequence("Ctrl+T"), self, activated=lambda: self.panels[self.active_index()].new_tab())
-        QShortcut(QKeySequence("Ctrl+W"), self, activated=lambda: self.panels[self.active_index()].close_tab())
-        QShortcut(QKeySequence("Ctrl+F"), self, activated=self.search)
-        QShortcut(QKeySequence("Ctrl+N"), self, activated=self.connect_ftp)
-        QShortcut(QKeySequence("Ctrl+H"), self, activated=self.toggle_hidden)
-        QShortcut(QKeySequence("Ctrl+S"), self, activated=lambda: self.panels[self.active_index()].show_filter())
-        QShortcut(QKeySequence("Ctrl+D"), self, activated=self.show_favorites)
-        QShortcut(QKeySequence("Ctrl+Shift+C"), self, activated=self.copy_path)
-        for seq in ("Alt+Left", "Ctrl+["):
-            QShortcut(QKeySequence(seq), self, activated=lambda: self.panels[self.active_index()].go_back())
-        for seq in ("Alt+Right", "Ctrl+]"):
-            QShortcut(QKeySequence(seq), self, activated=lambda: self.panels[self.active_index()].go_forward())
-        QShortcut(QKeySequence("Ctrl+."), self, activated=self.toggle_hidden)
-        for seq in ("F2", "Ctrl+M"):
-            QShortcut(QKeySequence(seq), self, activated=self.batch_rename)
-        QShortcut(QKeySequence("F3"), self, activated=lambda: self.open_file(edit=False))
-        QShortcut(QKeySequence("F4"), self, activated=lambda: self.open_file(edit=True))
-        QShortcut(QKeySequence("F5"), self, activated=lambda: self.transfer(move=False))
-        QShortcut(QKeySequence("F6"), self, activated=lambda: self.transfer(move=True))
-        QShortcut(QKeySequence("F7"), self, activated=self.make_dir)
-        for seq in ("F8", "Del", "Ctrl+Backspace"):
-            QShortcut(QKeySequence(seq), self, activated=self.delete)
-        for seq in ("Shift+F8", "Shift+Del"):
-            QShortcut(QKeySequence(seq), self, activated=lambda: self.delete(permanent=True))
+        self.apply_settings()
         self.panels[0].view.setFocus()
         QApplication.instance().focusChanged.connect(self._on_focus_changed)
         if self._state_file is not None:
@@ -219,6 +241,116 @@ class MainWindow(QMainWindow):
                 self._active = active
                 self.panels[active].view.setFocus()
 
+    def _run_command(self, command_id: str, handler) -> None:
+        """Run a command from its shortcut or menu entry.
+
+        Deleting is ignored while a text field has focus, so Del / Ctrl+Backspace typed in
+        the path bar, filter box or command line can never reach the file list.
+        """
+        if command_id in _LIST_ONLY and isinstance(QApplication.focusWidget(), QLineEdit):
+            return
+        handler()
+
+    def apply_settings(self) -> None:
+        """Apply `self.settings`: shortcuts, bars, columns, theme and user tools."""
+        st = self.settings
+        for cmd_id, keys in effective_shortcuts(self.commands, st.shortcuts).items():
+            self.actions_by_name[cmd_id].setShortcuts([QKeySequence(k) for k in keys])
+        self.cmd_bar.setVisible(st.show_command_line)
+        self.fn_bar.setVisible(st.show_fn_bar)
+        hidden = {i + 1 for i, key in enumerate(settings.COLUMNS) if not st.columns.get(key, True)}
+        for panel in self.panels:
+            panel.set_hidden_columns(hidden)
+        app = QApplication.instance()
+        if st.theme != "system" or theme.customized():
+            theme.apply(app, st.theme)
+        for act in self._tool_actions:
+            self.tools_menu.removeAction(act)
+            self.removeAction(act)
+            act.deleteLater()
+        self._tool_actions = []
+        layout = self.tool_bar.layout()
+        while layout.count():
+            item = layout.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        if st.tools:
+            self._tool_actions.append(self.tools_menu.addSeparator())
+        for tool in st.tools:
+            act = QAction(tool["name"], self)
+            act.setMenuRole(QAction.NoRole)
+            if tool.get("shortcut"):
+                act.setShortcut(QKeySequence(tool["shortcut"]))
+            act.triggered.connect(lambda _=False, t=tool: self.run_tool(t))
+            self.tools_menu.addAction(act)
+            self.addAction(act)
+            self._tool_actions.append(act)
+            btn = QPushButton(tool["name"])
+            btn.setFocusPolicy(Qt.NoFocus)
+            btn.setToolTip(tool["command"])
+            btn.clicked.connect(lambda _=False, t=tool: self.run_tool(t))
+            layout.addWidget(btn)
+        layout.addStretch(1)
+        self.tool_bar.setVisible(bool(st.tools))
+        self._update_prompt()
+
+    def open_settings(self) -> None:
+        dlg = SettingsDialog(self.settings, self.commands, self)
+        if dlg.exec() != SettingsDialog.Accepted:
+            return
+        self.settings = dlg.result_settings
+        settings.save(self.settings, self._settings_file)
+        self.apply_settings()
+
+    def run_tool(self, tool: dict) -> None:
+        """Start a user-defined tool with the active panel's selection (no shell involved)."""
+        panel = self.panels[self.active_index()]
+        folder = Path(panel.current_path())
+        try:
+            shell.launch(shell.tool_argv(tool["command"], panel.selected_paths(), folder), cwd=folder)
+        except (OSError, ValueError) as e:
+            self._error(e)
+
+    def _update_prompt(self) -> None:
+        folder = self.panels[self.active_index()].current_path()
+        self.cmd_prompt.setText(f"{Path(folder).name or folder}>")
+        self.cmd_prompt.setToolTip(folder)
+
+    def focus_command_line(self) -> None:
+        if not self.cmd_bar.isVisible():
+            self.cmd_bar.show()
+        self._update_prompt()
+        self.cmd_edit.setFocus()
+        self.cmd_edit.selectAll()
+
+    def run_command_line(self, text: str) -> None:
+        """Run what was typed in the command line, in the active panel's folder.
+
+        `cd [path]` moves the panel; anything else goes to the system shell as a background
+        job (cancellable from the queue) and its output is shown when it ends.
+        """
+        text = text.strip()
+        if not text:
+            return
+        panel = self.panels[self.active_index()]
+        cwd = Path(panel.current_path())
+        if text == "cd" or text.startswith("cd "):
+            arg = text[2:].strip().strip('"')
+            target = Path(arg).expanduser() if arg else Path.home()
+            target = target if target.is_absolute() else cwd / target
+            if not target.is_dir():
+                self._error(NotADirectoryError(str(target)))
+                return
+            panel.set_path(os.path.normpath(target))
+            return
+
+        def done(job: Job) -> None:
+            code, output = job.result
+            if output.strip() or code != 0:
+                TextDialog(f"$ {text}", output, self, summary=f"종료 코드 {code}").exec()
+
+        self.start_job(f"$ {text}", lambda job: shell.run_capture(text, cwd, job.control), on_done=done)
+
     def busy(self) -> bool:
         return bool(self.jobs) or self._worker is not None
 
@@ -246,8 +378,8 @@ class MainWindow(QMainWindow):
         self._refresh_flat()
         if errors:
             shown = "\n".join(errors[:10])
-            more = f"\n... (+{len(errors) - 10} more)" if len(errors) > 10 else ""
-            QMessageBox.warning(self, job.title, f"{len(errors)} item(s) failed:\n\n{shown}{more}")
+            more = f"\n... (외 {len(errors) - 10}개)" if len(errors) > 10 else ""
+            QMessageBox.warning(self, job.title, f"{len(errors)}개 항목이 실패했습니다:\n\n{shown}{more}")
         if on_done and not job.cancelled:
             on_done(job)
 
@@ -269,8 +401,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         if self.jobs:
-            if not self._ask("Quit", f"{len(self.jobs)} background job(s) are still running.\n"
-                                     "Cancel them and quit?"):
+            if not self._ask("종료", f"백그라운드 작업 {len(self.jobs)}개가 아직 실행 중입니다.\n"
+                                     "모두 취소하고 종료할까요?"):
                 event.ignore()
                 return
             for job in list(self.jobs):
@@ -334,7 +466,7 @@ class MainWindow(QMainWindow):
     def toggle_flat(self) -> None:
         panel = self.panels[self.active_index()]
         if panel.in_archive or panel.in_remote:
-            self._error(ValueError("flat view works on local folders only"))
+            self._error(ValueError("평면 보기는 로컬 폴더에서만 쓸 수 있습니다"))
             return
         panel.toggle_flat()
 
@@ -380,7 +512,7 @@ class MainWindow(QMainWindow):
     def open_default(self, path: Path) -> None:
         """Open a local file with the application the OS associates with it."""
         if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
-            self._error(OSError(f"no application could open {path}"))
+            self._error(OSError(f"이 파일을 열 수 있는 앱이 없습니다: {path}"))
 
     def copy_path(self) -> None:
         labels = self.panels[self.active_index()].selection_labels()
@@ -445,19 +577,19 @@ class MainWindow(QMainWindow):
         return QMessageBox.question(self, title, text) == QMessageBox.Yes
 
     def _error(self, e: Exception) -> None:
-        QMessageBox.critical(self, "Error", f"{type(e).__name__}: {e}")
+        QMessageBox.critical(self, "오류", f"{type(e).__name__}: {e}")
 
     def transfer(self, move: bool) -> None:
         src_panel = self.panels[self.active_index()]
         dst_panel = self.panels[1 - self.active_index()]
         if src_panel.in_remote and dst_panel.in_remote:
-            self._error(ValueError("remote to remote transfer is not supported"))
+            self._error(ValueError("원격에서 원격으로의 전송은 지원하지 않습니다"))
             return
         if (src_panel.in_remote or dst_panel.in_remote) and move:
-            self._error(ValueError("remote folders support copy (F5) only"))
+            self._error(ValueError("원격 폴더는 복사(F5)만 지원합니다"))
             return
         if dst_panel.in_archive or (src_panel.in_archive and move):
-            self._error(ValueError("archives are read-only; use F5 to extract"))
+            self._error(ValueError("압축 파일은 읽기 전용입니다. F5로 추출하세요"))
             return
         refresh = None
         if dst_panel.in_remote:
@@ -470,7 +602,7 @@ class MainWindow(QMainWindow):
                 self._error(e)
                 return
             fn = client.upload
-            verb = "Upload"
+            verb = "업로드"
 
             def refresh():
                 dst_panel.connect_remote(client, dst)
@@ -479,18 +611,18 @@ class MainWindow(QMainWindow):
             srcs = src_panel.remote_selection()
             names = [s.rsplit("/", 1)[-1] for s in srcs]
             fn = src_panel.remote.download
-            verb = "Download"
+            verb = "다운로드"
         elif src_panel.in_archive:
             dst = Path(dst_panel.current_path())
             arc, srcs = src_panel.archive, src_panel.archive_selection()
             names = [e.rsplit("/", 1)[-1] for e in srcs]
-            verb = "Extract"
+            verb = "추출"
         else:
             self._transfer_local(src_panel.selected_paths(), Path(dst_panel.current_path()), move)
             return
         if not srcs:
             return
-        if not self._ask(verb, f"{verb} {len(srcs)} item(s) to\n{dst}?"):
+        if not self._ask(verb, f"{len(srcs)}개 항목을 다음 위치로 {verb}할까요?\n{dst}"):
             return
         if dst_panel.in_remote:
             conflicts = [n for n in names if n in taken]
@@ -505,7 +637,7 @@ class MainWindow(QMainWindow):
         overwrite = "overwrite" in decisions.values()
         if src_panel.in_archive:
             self.start_job(
-                f"Extract {len(srcs)} item(s) to {dst}",
+                f"추출: {len(srcs)}개 항목 → {dst}",
                 lambda job: archive.extract(arc, srcs, dst, overwrite=overwrite, progress=job.on_item),
                 total_items=len(srcs))
             return
@@ -522,11 +654,11 @@ class MainWindow(QMainWindow):
         """
         if not srcs:
             return
-        verb = "Move" if move else "Copy"
-        if not self._ask(verb, f"{verb} {len(srcs)} item(s) to\n{dst}?"):
+        verb = "이동" if move else "복사"
+        if not self._ask(verb, f"{len(srcs)}개 항목을 다음 위치로 {verb}할까요?\n{dst}"):
             return
         self.start_job(
-            f"{verb} {len(srcs)} item(s) to {dst}",
+            f"{verb}: {len(srcs)}개 항목 → {dst}",
             lambda job: transfer.transfer(srcs, dst, move=move, on_conflict=job.ask,
                                           on_error=job.on_error, stats=job.stats,
                                           control=job.control))
@@ -553,18 +685,18 @@ class MainWindow(QMainWindow):
         """
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Question)
-        box.setWindowTitle("Already exists")
-        box.setText(f"'{name}' already exists in the destination.")
-        box.setInformativeText(detail or "Overwrite replaces the existing item.")
-        buttons = {box.addButton("Overwrite", QMessageBox.DestructiveRole): "overwrite",
-                   box.addButton("Skip", QMessageBox.AcceptRole): "skip"}
+        box.setWindowTitle("이미 있는 항목")
+        box.setText(f"대상 위치에 이미 있습니다:\n{name}")
+        box.setInformativeText(detail or "덮어쓰면 기존 항목이 새 항목으로 바뀝니다.")
+        buttons = {box.addButton("덮어쓰기", QMessageBox.DestructiveRole): "overwrite",
+                   box.addButton("건너뛰기", QMessageBox.AcceptRole): "skip"}
         if allow_rename:
-            buttons[box.addButton("Keep both", QMessageBox.AcceptRole)] = "rename"
+            buttons[box.addButton("둘 다 유지", QMessageBox.AcceptRole)] = "rename"
         box.addButton(QMessageBox.Cancel)
         check = None
         if remaining is None or remaining:
-            more = "" if remaining is None else f" ({remaining} more)"
-            check = QCheckBox(f"Apply to all{more}")
+            more = "" if remaining is None else f" (외 {remaining}개)"
+            check = QCheckBox(f"모두 적용{more}")
             box.setCheckBox(check)
         box.exec()
         choice = buttons.get(box.clickedButton())
@@ -575,13 +707,13 @@ class MainWindow(QMainWindow):
     def _run_task(self, title: str, total: int, task, on_done=None) -> None:
         if self._worker is not None:
             return  # one background task at a time
-        dialog = QProgressDialog(title, "Cancel", 0, total, self)
+        dialog = QProgressDialog(title, "취소", 0, total, self)
         dialog.setWindowTitle(title)
         dialog.setWindowModality(Qt.WindowModal)
         dialog.setMinimumDuration(500)
         worker = Worker(task, self)
         worker.progress.connect(lambda n, name: (dialog.setValue(n), dialog.setLabelText(name)))
-        worker.failed.connect(lambda msg: QMessageBox.critical(self, "Error", msg))
+        worker.failed.connect(lambda msg: QMessageBox.critical(self, "오류", msg))
         dialog.canceled.connect(worker.cancel)
 
         def finished():
@@ -602,19 +734,19 @@ class MainWindow(QMainWindow):
     def connect_ftp(self) -> None:
         panel = self.panels[self.active_index()]
         url, ok = QInputDialog.getText(
-            self, "Connect", "URL (ftp|sftp://[user[:password]@]host[:port][/path]):")
+            self, "원격 서버 연결", "URL (ftp|sftp://[user[:password]@]host[:port][/path]):")
         if not ok or not url.strip():
             return
         u = urlsplit(url.strip() if "://" in url else f"ftp://{url.strip()}")
         try:
             if u.scheme not in ("ftp", "sftp") or not u.hostname:
-                raise ValueError("expected ftp|sftp://host[:port][/path]")
+                raise ValueError("ftp|sftp://host[:port][/path] 형식이어야 합니다")
             sftp = u.scheme == "sftp"
             user = unquote(u.username) if u.username else ("" if sftp else "anonymous")
             password = unquote(u.password) if u.password is not None else ""
             if u.username and u.password is None:
                 password, ok = QInputDialog.getText(
-                    self, "Connect", f"Password for {user}@{u.hostname}:", QLineEdit.Password)
+                    self, "원격 서버 연결", f"{user}@{u.hostname} 비밀번호:", QLineEdit.Password)
                 if not ok:
                     return
             if sftp:
@@ -632,14 +764,14 @@ class MainWindow(QMainWindow):
     def search(self) -> None:
         panel = self.panels[self.active_index()]
         if panel.in_remote:
-            self._error(ValueError("search is not available on remote folders"))
+            self._error(ValueError("원격 폴더에서는 검색할 수 없습니다"))
             return
         pattern, ok = QInputDialog.getText(
-            self, "Search", "Name (glob like *.txt, or part of a name):", QLineEdit.Normal, "*")
+            self, "파일 검색", "이름 (*.txt 같은 패턴 또는 이름 일부):", QLineEdit.Normal, "*")
         if not ok or not pattern.strip():
             return
         text, ok = QInputDialog.getText(
-            self, "Search", "Containing text (leave empty to search by name only):")
+            self, "파일 검색", "포함할 텍스트 (비워 두면 이름으로만 검색):")
         if not ok:
             return
         dlg = SearchDialog(Path(panel.current_path()), pattern, self, text=text)
@@ -652,7 +784,7 @@ class MainWindow(QMainWindow):
         """Active panel and its selected local paths; reports an error outside local mode."""
         panel = self.panels[self.active_index()]
         if panel.in_archive or panel.in_remote:
-            self._error(ValueError("this command works on local folders only"))
+            self._error(ValueError("이 명령은 로컬 폴더에서만 쓸 수 있습니다"))
             return None
         return panel, panel.selected_paths()
 
@@ -661,7 +793,7 @@ class MainWindow(QMainWindow):
         active = self.panels[self.active_index()]
         other = self.panels[1 - self.active_index()]
         if any(p.in_archive or p.in_remote for p in (active, other)):
-            self._error(ValueError("both panels must show local folders"))
+            self._error(ValueError("양쪽 패널이 모두 로컬 폴더여야 합니다"))
             return None
         return active, other
 
@@ -698,7 +830,7 @@ class MainWindow(QMainWindow):
             return
         plan = dlg.plan
         self.start_job(
-            f"Synchronize {left.name} ↔ {right.name} ({len(plan)} item(s))",
+            f"동기화: {left.name} ↔ {right.name} ({len(plan)}개 항목)",
             lambda job: sync.apply(plan, left, right, job.stats, job.control, job.on_error))
 
     def diff_files(self) -> None:
@@ -717,7 +849,7 @@ class MainWindow(QMainWindow):
             a, b = mine[0], Path(other.current_path()) / mine[0].name
         else:
             self._error(ValueError(
-                "select two files, or one file that also exists in the other panel"))
+                "파일 두 개를 선택하거나, 반대편 패널에도 있는 파일 하나를 선택하세요"))
             return
         if self.active_index() == 1 and len(mine) == 1:
             a, b = b, a  # keep the left panel's file on the left
@@ -755,13 +887,13 @@ class MainWindow(QMainWindow):
             return
         dst = folder / name.strip()
         if not archive.can_create(dst.name) or not ops.is_valid_name(dst.name):
-            self._error(ValueError(f"unsupported or invalid archive name: {name.strip()}"))
+            self._error(ValueError(f"지원하지 않거나 잘못된 압축 파일 이름입니다: {name.strip()}"))
             return
         overwrite = dst.exists() or dst.is_symlink()
         if overwrite and not self._ask("압축 파일 만들기", f"{dst.name} 파일이 이미 있습니다. 덮어쓸까요?"):
             return
         self.start_job(
-            f"Pack {len(paths)} item(s) into {dst.name}",
+            f"압축: {len(paths)}개 항목 → {dst.name}",
             lambda job: archive.create(dst, paths, overwrite=overwrite, stats=job.stats,
                                        control=job.control, on_error=job.on_error))
 
@@ -772,7 +904,7 @@ class MainWindow(QMainWindow):
             return
         panel, paths = sel
         label, ok = QInputDialog.getItem(
-            self, "Checksum", "Algorithm:", list(checksum.ALGORITHMS), 0, False)
+            self, "체크섬 계산", "알고리즘:", list(checksum.ALGORITHMS), 0, False)
         if not ok:
             return
         algo = checksum.ALGORITHMS[label]
@@ -781,11 +913,11 @@ class MainWindow(QMainWindow):
 
         def done(job: Job) -> None:
             if job.result:
-                TextDialog(f"{label} checksums", job.result, self,
+                TextDialog(f"{label} 체크섬", job.result, self,
                            save_as=base / f"{stem}.{algo}").exec()
 
         self.start_job(
-            f"{label} of {len(paths)} item(s)",
+            f"{label} 계산: {len(paths)}개 항목",
             lambda job: checksum.hash_files(paths, base, algo, job.stats, job.control, job.on_error),
             on_done=done)
 
@@ -796,25 +928,25 @@ class MainWindow(QMainWindow):
             return
         sums = [p for p in sel[1] if p.suffix.lower() in checksum.EXTENSIONS and p.is_file()]
         if len(sums) != 1:
-            self._error(ValueError("select one .sha256, .sha1 or .md5 file to verify"))
+            self._error(ValueError(".sha256, .sha1, .md5 파일 하나를 선택하세요"))
             return
 
         def done(job: Job) -> None:
             if not job.result:
                 return
             bad = sum(1 for _, status in job.result if status != "OK")
-            summary = (f"All {len(job.result)} file(s) match." if not bad
-                       else f"{bad} of {len(job.result)} file(s) did NOT verify.")
+            summary = (f"파일 {len(job.result)}개가 모두 일치합니다." if not bad
+                       else f"파일 {len(job.result)}개 중 {bad}개가 일치하지 않습니다.")
             body = "\n".join(f"{status:<8}{name}" for name, status in job.result)
-            TextDialog(f"Verify {sums[0].name}", body, self, summary=summary).exec()
+            TextDialog(f"검증 - {sums[0].name}", body, self, summary=summary).exec()
 
-        self.start_job(f"Verify {sums[0].name}",
+        self.start_job(f"검증: {sums[0].name}",
                        lambda job: checksum.verify(sums[0], job.stats, job.control), on_done=done)
 
     def batch_rename(self) -> None:
         panel = self.panels[self.active_index()]
         if panel.in_archive or panel.in_remote:
-            self._error(ValueError("archives and remote folders are read-only"))
+            self._error(ValueError("압축 파일과 원격 폴더는 읽기 전용입니다"))
             return
         paths = panel.selected_paths()
         if not paths:
@@ -840,9 +972,9 @@ class MainWindow(QMainWindow):
     def make_dir(self) -> None:
         panel = self.panels[self.active_index()]
         if panel.in_remote:
-            self._error(ValueError("remote folders are read-only"))
+            self._error(ValueError("원격 폴더는 읽기 전용입니다"))
             return
-        name, ok = QInputDialog.getText(self, "New folder", "Name:")
+        name, ok = QInputDialog.getText(self, "새 폴더", "이름:")
         if not ok or not name:
             return
         try:
@@ -854,20 +986,20 @@ class MainWindow(QMainWindow):
         """F8 moves the selection to the trash; Shift+F8 deletes permanently."""
         panel = self.panels[self.active_index()]
         if panel.in_archive or panel.in_remote:
-            self._error(ValueError("archives and remote folders are read-only"))
+            self._error(ValueError("압축 파일과 원격 폴더는 읽기 전용입니다"))
             return
         paths = panel.selected_paths()
         if not paths:
             return
         if permanent:
-            question = f"Permanently delete {len(paths)} item(s)?\nThis cannot be undone."
+            question = f"{len(paths)}개 항목을 영구 삭제할까요?\n이 작업은 되돌릴 수 없습니다."
         else:
-            question = f"Move {len(paths)} item(s) to the Trash?"
-        if not self._ask("Delete", question):
+            question = f"{len(paths)}개 항목을 휴지통으로 옮길까요?"
+        if not self._ask("삭제", question):
             return
         fn = ops.delete if permanent else ops.trash
-        verb = "Delete" if permanent else "Trash"
-        self.start_job(f"{verb} {len(paths)} item(s)",
+        verb = "영구 삭제" if permanent else "휴지통으로 이동"
+        self.start_job(f"{verb}: {len(paths)}개 항목",
                        lambda job: fn(paths, progress=job.on_item, on_error=job.on_error),
                        total_items=len(paths))
 
@@ -916,7 +1048,7 @@ class MainWindow(QMainWindow):
             )
             return
 
-        dialog = QProgressDialog("업데이트 다운로드 중...", "Cancel", 0, 100, self)
+        dialog = QProgressDialog("업데이트 다운로드 중...", "취소", 0, 100, self)
         dialog.setWindowTitle("업데이트 설치")
         dialog.setWindowModality(Qt.WindowModal)
         dialog.setMinimumDuration(0)
@@ -978,6 +1110,43 @@ def _delete_when_done(thread) -> None:
         thread.finished.connect(thread.deleteLater)
 
 
+_LIST_ONLY = {"delete", "delete_permanent"}
+
+
+class _CommandEdit(QLineEdit):
+    """Command line: Enter runs, Up/Down walk the history, Esc returns to the file list."""
+
+    def __init__(self, window: "MainWindow"):
+        super().__init__()
+        self._window = window
+        self.history: list[str] = []
+        self._pos = 0
+        self.setPlaceholderText("명령 입력 후 Enter — 현재 폴더에서 실행 (cd 폴더 이동 지원)")
+
+    def keyPressEvent(self, e) -> None:
+        key = e.key()
+        if key in (Qt.Key_Return, Qt.Key_Enter):
+            text = self.text().strip()
+            if text:
+                if not self.history or self.history[-1] != text:
+                    self.history.append(text)
+                    del self.history[:-50]
+                self._pos = len(self.history)
+                self.clear()
+                self._window.run_command_line(text)
+        elif key == Qt.Key_Up and self.history:
+            self._pos = max(0, self._pos - 1)
+            self.setText(self.history[self._pos])
+        elif key == Qt.Key_Down and self.history:
+            self._pos = min(len(self.history), self._pos + 1)
+            self.setText(self.history[self._pos] if self._pos < len(self.history) else "")
+        elif key == Qt.Key_Escape:
+            self.clear()
+            self._window.panels[self._window.active_index()].view.setFocus()
+        else:
+            super().keyPressEvent(e)
+
+
 _REVEAL_LABEL = {"darwin": "Finder에서 보기", "win32": "탐색기에서 보기"}.get(
     sys.platform, "파일 관리자에서 보기")
 
@@ -990,9 +1159,9 @@ def _conflict_detail(src: Path, dst: Path) -> str:
         except OSError:
             return "?"
         when = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
-        return f"{'folder' if p.is_dir() else ops.format_size(st.st_size)}, {when}"
+        return f"{'폴더' if p.is_dir() else ops.format_size(st.st_size)}, {when}"
 
-    return f"Existing: {info(dst)}\nNew: {info(src)}\nFrom: {src.parent}"
+    return f"기존 항목: {info(dst)}\n새 항목: {info(src)}\n원본 위치: {src.parent}"
 
 
 def _set_macos_app_name(name: str) -> None:
@@ -1090,6 +1259,13 @@ def _set_windows_app_id(app_id: str = "com.sungback.commander") -> None:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
 
 
+def _install_korean_qt_texts(app: QApplication) -> None:
+    """Qt's own buttons (Yes / No / Cancel ...) in Korean, matching the rest of the UI."""
+    translator = QTranslator(app)
+    if translator.load("qtbase_ko", QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)):
+        app.installTranslator(translator)
+
+
 def main() -> int:
     _set_macos_app_name("commander")
     _set_windows_app_id()
@@ -1098,7 +1274,9 @@ def main() -> int:
     app.setApplicationName("commander")
     app.setApplicationDisplayName("commander")
     app.setWindowIcon(app_icon())
-    win = MainWindow(state_file=STATE_FILE, auto_check_updates=True)
+    _install_korean_qt_texts(app)
+    win = MainWindow(state_file=STATE_FILE, auto_check_updates=True,
+                     settings_file=settings.SETTINGS_FILE)
     app.aboutToQuit.connect(win.save_state)
     app.aboutToQuit.connect(ops.save_size_cache)
     win.show()

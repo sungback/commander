@@ -31,7 +31,7 @@ def test_checksum_compute_then_verify(tmp_path, monkeypatch):
     win.actions_by_name["checksum"].trigger()
     _idle(win)
     title, text, dlg = shown[-1]
-    assert title == "SHA-256 checksums"
+    assert title == "SHA-256 체크섬"
     assert text == f"{hashlib.sha256(b'x').hexdigest()} *f.txt\n"
     assert dlg._save_as == a / "f.txt.sha256"
 
@@ -45,7 +45,7 @@ def test_checksum_compute_then_verify(tmp_path, monkeypatch):
     win.actions_by_name["verify"].trigger()
     _idle(win)
     title, text, dlg = shown[-1]
-    assert title == "Verify f.txt.sha256"
+    assert title == "검증 - f.txt.sha256"
     assert text.split() == ["OK", "f.txt", "MISSING", "missing.txt"]
 
 
