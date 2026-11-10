@@ -37,7 +37,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import __version__, archive, ops, rename, shell, transfer, updater
+from . import __version__, archive, checksum, ops, rename, shell, transfer, updater
+from .dialogs import TextDialog
 from .panel import FilePanel
 from .queue_panel import QueuePanel
 from .remote import FtpClient, SftpClient
@@ -102,6 +103,19 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(self.queue)
         root_layout.addWidget(self.fn_bar)
         self.setCentralWidget(central)
+        self.tools_menu = self.menuBar().addMenu("도구")
+        self.actions_by_name: dict[str, QAction] = {}
+        for name, label, shortcut, handler in (
+            ("checksum", "체크섬 계산...", "", self.checksum),
+            ("verify", "체크섬 검증", "", self.verify_checksum),
+        ):
+            act = QAction(label, self)
+            act.setMenuRole(QAction.NoRole)
+            if shortcut:
+                act.setShortcut(QKeySequence(shortcut))
+            act.triggered.connect(lambda _=False, h=handler: h())
+            self.tools_menu.addAction(act)
+            self.actions_by_name[name] = act
         help_menu = self.menuBar().addMenu("도움말")
         self.check_update_action = QAction("업데이트 확인...", self)
         self.check_update_action.setMenuRole(QAction.NoRole)
@@ -188,17 +202,20 @@ class MainWindow(QMainWindow):
     def busy(self) -> bool:
         return bool(self.jobs) or self._worker is not None
 
-    def start_job(self, title: str, run_fn, total_items: int = 0) -> Job:
-        """Run `run_fn(job)` in the background; it appears in the queue panel until it ends."""
+    def start_job(self, title: str, run_fn, total_items: int = 0, on_done=None) -> Job:
+        """Run `run_fn(job)` in the background; it appears in the queue panel until it ends.
+
+        `on_done(job)` runs on the UI thread afterwards unless the job was cancelled.
+        """
         job = Job(title, run_fn, total_items, self)
         job.conflict.connect(self._on_job_conflict)
-        job.finished.connect(lambda: self._job_finished(job))
+        job.finished.connect(lambda: self._job_finished(job, on_done))
         self.jobs.append(job)
         self.queue.add(job)
         job.start()
         return job
 
-    def _job_finished(self, job: Job) -> None:
+    def _job_finished(self, job: Job, on_done=None) -> None:
         if job not in self.jobs:
             return
         self.jobs.remove(job)
@@ -210,6 +227,8 @@ class MainWindow(QMainWindow):
             shown = "\n".join(errors[:10])
             more = f"\n... (+{len(errors) - 10} more)" if len(errors) > 10 else ""
             QMessageBox.warning(self, job.title, f"{len(errors)} item(s) failed:\n\n{shown}{more}")
+        if on_done and not job.cancelled:
+            on_done(job)
 
     def _on_job_conflict(self, job: Job, src: str, dst: str) -> None:
         """Answer jobs' conflict questions one dialog at a time, even when several jobs ask."""
@@ -549,14 +568,73 @@ class MainWindow(QMainWindow):
         if panel.in_remote:
             self._error(ValueError("search is not available on remote folders"))
             return
-        pattern, ok = QInputDialog.getText(self, "Search", "Name (glob like *.txt, or text):")
+        pattern, ok = QInputDialog.getText(
+            self, "Search", "Name (glob like *.txt, or part of a name):", QLineEdit.Normal, "*")
         if not ok or not pattern.strip():
             return
-        dlg = SearchDialog(Path(panel.current_path()), pattern, self)
+        text, ok = QInputDialog.getText(
+            self, "Search", "Containing text (leave empty to search by name only):")
+        if not ok:
+            return
+        dlg = SearchDialog(Path(panel.current_path()), pattern, self, text=text)
         dlg.exec()
         if dlg.chosen is not None:
             target = dlg.chosen if dlg.chosen.is_dir() else dlg.chosen.parent
             panel.set_path(str(target))
+
+    def _local_selection(self) -> tuple[FilePanel, list[Path]] | None:
+        """Active panel and its selected local paths; reports an error outside local mode."""
+        panel = self.panels[self.active_index()]
+        if panel.in_archive or panel.in_remote:
+            self._error(ValueError("this command works on local folders only"))
+            return None
+        return panel, panel.selected_paths()
+
+    def checksum(self) -> None:
+        """Compute checksums of the selected files (folders are included recursively)."""
+        sel = self._local_selection()
+        if sel is None or not sel[1]:
+            return
+        panel, paths = sel
+        label, ok = QInputDialog.getItem(
+            self, "Checksum", "Algorithm:", list(checksum.ALGORITHMS), 0, False)
+        if not ok:
+            return
+        algo = checksum.ALGORITHMS[label]
+        base = Path(panel.current_path())
+        stem = paths[0].name if len(paths) == 1 else "checksums"
+
+        def done(job: Job) -> None:
+            if job.result:
+                TextDialog(f"{label} checksums", job.result, self,
+                           save_as=base / f"{stem}.{algo}").exec()
+
+        self.start_job(
+            f"{label} of {len(paths)} item(s)",
+            lambda job: checksum.hash_files(paths, base, algo, job.stats, job.control, job.on_error),
+            on_done=done)
+
+    def verify_checksum(self) -> None:
+        """Verify the files listed in the selected .sha256 / .sha1 / .md5 file."""
+        sel = self._local_selection()
+        if sel is None:
+            return
+        sums = [p for p in sel[1] if p.suffix.lower() in checksum.EXTENSIONS and p.is_file()]
+        if len(sums) != 1:
+            self._error(ValueError("select one .sha256, .sha1 or .md5 file to verify"))
+            return
+
+        def done(job: Job) -> None:
+            if not job.result:
+                return
+            bad = sum(1 for _, status in job.result if status != "OK")
+            summary = (f"All {len(job.result)} file(s) match." if not bad
+                       else f"{bad} of {len(job.result)} file(s) did NOT verify.")
+            body = "\n".join(f"{status:<8}{name}" for name, status in job.result)
+            TextDialog(f"Verify {sums[0].name}", body, self, summary=summary).exec()
+
+        self.start_job(f"Verify {sums[0].name}",
+                       lambda job: checksum.verify(sums[0], job.stats, job.control), on_done=done)
 
     def batch_rename(self) -> None:
         panel = self.panels[self.active_index()]
@@ -638,7 +716,7 @@ class MainWindow(QMainWindow):
         worker = UpdateCheckWorker(self)
 
         def on_checked(info: updater.ReleaseInfo) -> None:
-            worker.deleteLater()
+            _delete_when_done(worker)
             self._update_worker = None
             if updater.is_newer(info.version, __version__):
                 self._prompt_and_install_update(info)
@@ -648,7 +726,7 @@ class MainWindow(QMainWindow):
                 )
 
         def on_failed(msg: str) -> None:
-            worker.deleteLater()
+            _delete_when_done(worker)
             self._update_worker = None
             if not silent_if_up_to_date:
                 QMessageBox.critical(self, "업데이트 확인 실패", msg)
@@ -692,7 +770,7 @@ class MainWindow(QMainWindow):
         def on_staged(staged_path: Path) -> None:
             dialog.reset()
             dialog.deleteLater()
-            worker.deleteLater()
+            _delete_when_done(worker)
             self._update_worker = None
             try:
                 self.save_state()
@@ -708,7 +786,7 @@ class MainWindow(QMainWindow):
         def on_failed(err: str) -> None:
             dialog.reset()
             dialog.deleteLater()
-            worker.deleteLater()
+            _delete_when_done(worker)
             self._update_worker = None
             QMessageBox.critical(self, "업데이트 설치 실패", err)
 
@@ -716,7 +794,7 @@ class MainWindow(QMainWindow):
             if self._update_worker is worker:
                 dialog.reset()
                 dialog.deleteLater()
-                worker.deleteLater()
+                _delete_when_done(worker)
                 self._update_worker = None
 
         worker.progress.connect(on_progress)
@@ -726,6 +804,14 @@ class MainWindow(QMainWindow):
         dialog.canceled.connect(worker.cancel)
         self._update_worker = worker
         worker.start()
+
+
+def _delete_when_done(thread) -> None:
+    """Delete a QThread only after it has really stopped (its result signal fires while it runs)."""
+    if thread.isFinished():
+        thread.deleteLater()
+    else:
+        thread.finished.connect(thread.deleteLater)
 
 
 _REVEAL_LABEL = {"darwin": "Finder에서 보기", "win32": "탐색기에서 보기"}.get(

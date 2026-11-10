@@ -65,6 +65,7 @@ class Job(QThread):
         self.control = transfer.Control()
         self.errors: list[str] = []
         self.waiting = False  # blocked on a conflict question
+        self.result = None  # whatever run_fn returns, for the UI's completion callback
         self._run_fn = run_fn
         self._answered = threading.Event()
         self._choice = ""
@@ -118,7 +119,7 @@ class Job(QThread):
 
     def run(self) -> None:
         try:
-            self._run_fn(self)
+            self.result = self._run_fn(self)
         except (Cancelled, transfer.Cancelled):
             pass
         except (OSError, ValueError, shutil.Error) as e:
@@ -130,10 +131,11 @@ class SearchWorker(QThread):
 
     LIMIT = 5000
 
-    def __init__(self, root: Path, pattern: str, parent=None):
+    def __init__(self, root: Path, pattern: str, parent=None, text: str = ""):
         super().__init__(parent)
         self._root = root
         self._pattern = pattern
+        self._text = text
         self._cancel = False
         self.truncated = False
 
@@ -142,7 +144,8 @@ class SearchWorker(QThread):
 
     def run(self) -> None:
         count = 0
-        for path in search.find(self._root, self._pattern, lambda: self._cancel, self.LIMIT):
+        for path in search.find(self._root, self._pattern, lambda: self._cancel, self.LIMIT,
+                                text=self._text):
             self.found.emit(str(path))
             count += 1
         self.truncated = count >= self.LIMIT

@@ -47,3 +47,21 @@ def test_symlink_dirs_not_followed(tmp_path):
     (root / "loop").symlink_to(root, target_is_directory=True)
     found = _rel(root, search.find(root, "*.txt"))
     assert found == ["B.TXT", "a.txt", "sub/d.txt", "sub/deep/e.txt"]
+
+
+def test_contains_text_across_chunks_and_encodings(tmp_path, monkeypatch):
+    monkeypatch.setattr(search, "_CHUNK", 8)
+    (tmp_path / "split.txt").write_text("0123456Needle in a haystack")  # straddles a chunk edge
+    (tmp_path / "utf16.txt").write_bytes("한글 needle".encode("utf-16"))
+    (tmp_path / "korean.txt").write_text("안녕하세요 반갑습니다", encoding="utf-8")
+    (tmp_path / "none.txt").write_text("nothing here")
+    (tmp_path / "needle-dir").mkdir()
+    assert search.contains(tmp_path / "split.txt", "NEEDLE")
+    assert search.contains(tmp_path / "utf16.txt", "needle")
+    assert search.contains(tmp_path / "korean.txt", "반갑")
+    assert not search.contains(tmp_path / "none.txt", "needle")
+    assert not search.contains(tmp_path / "missing.txt", "needle")
+    assert _rel(tmp_path, search.find(tmp_path, "*", text="needle")) == ["split.txt", "utf16.txt"]
+    assert _rel(tmp_path, search.find(tmp_path, "utf*", text="needle")) == ["utf16.txt"]
+    assert _rel(tmp_path, search.find(tmp_path, "", text="needle", limit=1)) in (
+        ["split.txt"], ["utf16.txt"])

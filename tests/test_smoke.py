@@ -228,15 +228,23 @@ def test_search_dialog_navigates(tmp_path, monkeypatch):
     (b / "deep").mkdir()
     (b / "deep" / "target.log").write_text("x")
     win.panels[0].set_path(str(tmp_path))
-    monkeypatch.setattr(QInputDialog, "getText", lambda *_: ("target", True))
+    (b / "deep" / "other.log").write_text("the needle is here")
+    answers = iter([("target", True), ("", True), ("*.log", True), ("NEEDLE", True)])
+    monkeypatch.setattr(QInputDialog, "getText", lambda *_: next(answers))
+    expected = ["target.log"]
 
     def fake_exec(self):
         _wait(lambda: self.results.count() == 1 and self.worker.isFinished())
-        assert self.results.item(0).text() == str(b / "deep" / "target.log")
+        assert self.results.item(0).text() == str(b / "deep" / expected[0])
         self._choose(self.results.item(0))
 
     monkeypatch.setattr(SearchDialog, "exec", fake_exec)
-    win.search()
+    win.search()  # by name only
+    assert win.panels[0].current_path() == str(b / "deep")
+
+    win.panels[0].set_path(str(tmp_path))
+    expected[0] = "other.log"
+    win.search()  # name mask + containing text (case-insensitive)
     assert win.panels[0].current_path() == str(b / "deep")
 
 

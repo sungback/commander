@@ -8,10 +8,11 @@ from .workers import SearchWorker
 class SearchDialog(QDialog):
     """Streams search results; activating a result sets `chosen` and closes."""
 
-    def __init__(self, root: Path, pattern: str, parent=None):
+    def __init__(self, root: Path, pattern: str, parent=None, text: str = ""):
         super().__init__(parent)
         self.chosen: Path | None = None
-        self.setWindowTitle(f"Search: {pattern} in {root}")
+        what = f"{pattern} containing '{text}'" if text else pattern
+        self.setWindowTitle(f"Search: {what} in {root}")
         self.resize(700, 450)
         self.results = QListWidget()
         self.results.itemActivated.connect(self._choose)
@@ -21,7 +22,7 @@ class SearchDialog(QDialog):
         layout.addWidget(self.results)
         layout.addWidget(self.stop)
 
-        self.worker = SearchWorker(root, pattern, self)
+        self.worker = SearchWorker(root, pattern, self, text=text)
         self.worker.found.connect(self.results.addItem)
         self.worker.finished.connect(self._done)
         self.worker.start()
