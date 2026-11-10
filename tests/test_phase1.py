@@ -1,7 +1,7 @@
 """Offscreen UI tests for everyday-operation features (trash, conflicts, error summary)."""
 from pathlib import Path
 
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox
 from test_smoke import _idle, _names, _select_file, _setup, _wait
 
 from commander import ops
@@ -288,3 +288,145 @@ def test_active_panel_follows_focus(tmp_path, monkeypatch):
     assert win.active_index() == 0
     win._on_focus_changed(None, None)
     assert win.active_index() == 0
+
+
+def _row(panel, name):
+    m = panel.view.model()
+    root = panel.view.rootIndex()
+    return m.index(_view_rows(panel).index(name), 0, root)
+
+
+def _labels(menu):
+    return [a.text().split("\t")[0] for a in menu.actions() if not a.isSeparator()]
+
+
+def test_enter_opens_file_with_default_app(tmp_path, monkeypatch):
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QDesktopServices
+    from PySide6.QtTest import QTest
+
+    win, a, _b = _win(tmp_path, monkeypatch)
+    opened = []
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url.toLocalFile()) or True)
+    _select_file(win)
+    QTest.keyClick(win.panels[0].view, Qt.Key_Return)
+    assert opened == [str(a / "f.txt")]
+    assert win.panels[0].current_path() == str(a)
+
+
+def test_context_menu_follows_panel_mode(tmp_path, monkeypatch):
+    from commander import shell
+
+    win, a, b = _win(tmp_path, monkeypatch)
+    d = _nav_tree(tmp_path)
+    p = win.panels[0]
+    p.view.clearSelection()
+    empty = _labels(win._context_menu(p))
+    assert "복사" not in empty and {"경로 복사", "여기서 터미널 열기", "새 폴더"} <= set(empty)
+
+    _select_file(win)
+    labels = _labels(win._context_menu(p))
+    assert labels[:3] == ["열기", "보기", "편집"]
+    assert {"복사", "이동", "이름 변경", "휴지통으로 이동", "영구 삭제"} <= set(labels)
+
+    launched = []
+    monkeypatch.setattr(shell, "launch", lambda argv, cwd=None: launched.append((argv, cwd)))
+    menu = win._context_menu(p)
+    for a_ in menu.actions():
+        if a_.text() in ("여기서 터미널 열기", "경로 복사\tCtrl+Shift+C") or "에서 보기" in a_.text():
+            a_.trigger()
+    assert QApplication.clipboard().text() == str(a / "f.txt")
+    assert len(launched) == 2 and launched[1][1] == a
+    assert str(a / "f.txt") in " ".join(launched[0][0]) or str(a) in launched[0][0]
+    next(x for x in menu.actions() if x.text().startswith("복사")).trigger()
+    _idle(win)
+    assert (b / "f.txt").exists()
+
+    p.set_path(str(d / "z.zip"))
+    p.select_pattern("one.txt")
+    arch = _labels(win._context_menu(p))
+    assert arch == ["추출", "경로 복사"]
+    win.copy_path()
+    assert QApplication.clipboard().text() == f"{d / 'z.zip'}:/one.txt"
+
+
+def test_right_click_selects_row_under_cursor(tmp_path, monkeypatch):
+    win, _a, _b = _win(tmp_path, monkeypatch)
+    p = win.panels[0]
+    seen = []
+    monkeypatch.setattr(MainWindow, "show_context_menu", lambda self, panel, pos: seen.append(panel))
+    p.view.clearSelection()
+    p.view.customContextMenuRequested.emit(p.view.visualRect(_row(p, "f.txt")).center())
+    assert [x.name for x in p.selected_paths()] == ["f.txt"] and seen == [p]
+
+
+def _drop(view, paths, pos, move=False):
+    """Deliver a drop offering copy+move; Shift makes move the proposed action, as in a real drag."""
+    from PySide6.QtCore import QMimeData, QPointF, Qt, QUrl
+    from PySide6.QtGui import QDropEvent
+
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(x)) for x in paths])
+    ev = QDropEvent(QPointF(pos), Qt.CopyAction | Qt.MoveAction, mime, Qt.LeftButton,
+                    Qt.ShiftModifier if move else Qt.NoModifier)
+    assert (ev.proposedAction() == Qt.MoveAction) == move
+    view.dropEvent(ev)
+    return ev.isAccepted(), ev.dropAction()  # the event must not outlive its mime data
+
+
+def test_drag_and_drop_copies_and_moves(tmp_path, monkeypatch):
+    from PySide6.QtCore import QPoint, Qt
+
+    win, a, b = _win(tmp_path, monkeypatch)
+    (b / "sub").mkdir()
+    dst = win.panels[1]
+    _wait(lambda: "sub" in _view_rows(dst))
+    below_rows = QPoint(5, dst.view.viewport().height() - 2)
+
+    assert _drop(dst.view, [a / "f.txt"], below_rows) == (True, Qt.CopyAction)
+    _wait(lambda: (b / "f.txt").exists())
+    _idle(win)
+    assert (a / "f.txt").exists()
+
+    # Dropping on a folder row targets that folder; a move is still reported as a copy
+    on_sub = dst.view.visualRect(_row(dst, "sub")).center()
+    assert _drop(dst.view, [a / "f.txt"], on_sub, move=True) == (True, Qt.CopyAction)
+    _wait(lambda: (b / "sub" / "f.txt").exists())
+    _idle(win)
+    assert not (a / "f.txt").exists()
+
+    src = win.panels[0]
+    (a / "g.txt").write_text("g")
+    _wait(lambda: "g.txt" in _view_rows(src))
+    assert src.model.flags(_row(src, "g.txt")) & Qt.ItemIsDragEnabled
+    assert not src.model.flags(_row(src, "..")) & Qt.ItemIsDragEnabled
+
+    # Dropping a file onto the folder it already lives in, or '..' itself, does nothing
+    _drop(dst.view, [b / "f.txt", b / ".."], below_rows, move=True)
+    QApplication.processEvents()
+    assert win._worker is None and (b / "f.txt").exists()
+
+
+def test_drop_is_rejected_in_archive_mode(tmp_path, monkeypatch):
+    from PySide6.QtCore import QPoint
+
+    win, a, _b = _win(tmp_path, monkeypatch)
+    d = _nav_tree(tmp_path)
+    dst = win.panels[1]
+    dst.set_path(str(d / "z.zip"))
+    accepted, _action = _drop(dst.view, [a / "f.txt"], QPoint(5, 5))
+    QApplication.processEvents()
+    assert not accepted and win._worker is None and (a / "f.txt").exists()
+
+
+def test_shell_commands_per_platform(tmp_path):
+    from commander import shell
+
+    f = tmp_path / "f.txt"
+    f.write_text("x")
+    assert shell.reveal_command(f, "darwin") == ["open", "-R", str(f)]
+    assert shell.reveal_command(f, "win32") == ["explorer", f"/select,{f}"]
+    assert shell.reveal_command(f, "linux") == ["xdg-open", str(tmp_path)]
+    assert shell.reveal_command(tmp_path, "linux") == ["xdg-open", str(tmp_path)]
+    assert shell.terminal_command("darwin")[:3] == ["open", "-a", "Terminal"]
+    assert shell.terminal_command("win32")[0] == "cmd.exe"

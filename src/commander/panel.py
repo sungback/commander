@@ -10,6 +10,7 @@ from PySide6.QtCore import (
     QSignalBlocker,
     QSortFilterProxyModel,
     Qt,
+    Signal,
 )
 from PySide6.QtGui import QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
@@ -137,6 +138,12 @@ class _SortProxy(QSortFilterProxyModel):
             return self.mapFromSource(self._src.index(row_or_path, column))
         return super().index(row_or_path, column, QModelIndex() if parent is None else parent)
 
+    def flags(self, index: QModelIndex):
+        f = super().flags(index)
+        if self.fileName(index.siblingAtColumn(0)) == "..":
+            f &= ~Qt.ItemIsDragEnabled  # never hand the parent folder to another app
+        return f
+
     def filePath(self, index: QModelIndex) -> str:
         p = self._src.filePath(self.mapToSource(index))
         return os.path.normpath(p) if p else ""
@@ -204,6 +211,53 @@ class _View(QTreeView):
     def __init__(self, tab: "_Tab"):
         super().__init__()
         self._tab = tab
+        self.setDragDropMode(QTreeView.DragDrop)
+        self.setDefaultDropAction(Qt.CopyAction)
+        self.setDropIndicatorShown(False)
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._on_context_menu)
+
+    def _on_context_menu(self, pos) -> None:
+        idx = self.indexAt(pos)
+        if idx.isValid() and not self.selectionModel().isRowSelected(idx.row(), idx.parent()):
+            self.setCurrentIndex(idx.siblingAtColumn(0))
+        elif not idx.isValid():
+            self.clearSelection()
+        if self._tab.context_requested:
+            self._tab.context_requested(self.viewport().mapToGlobal(pos))
+
+    def _accepts(self, e) -> bool:
+        """Dropped files are only taken by a local folder listing."""
+        return e.mimeData().hasUrls() and not (self._tab.in_archive or self._tab.in_remote)
+
+    def dragEnterEvent(self, e) -> None:
+        if self._accepts(e):
+            e.acceptProposedAction()
+        else:
+            e.ignore()
+
+    def dragMoveEvent(self, e) -> None:
+        self.dragEnterEvent(e)
+
+    def dropEvent(self, e) -> None:
+        if not self._accepts(e):
+            e.ignore()
+            return
+        tab = self._tab
+        target = tab.current_path()
+        idx = self.indexAt(e.position().toPoint()).siblingAtColumn(0)
+        if idx.isValid() and tab.model.isDir(idx) and tab.model.fileName(idx) != "..":
+            target = tab.model.filePath(idx)
+        paths = [Path(u.toLocalFile()) for u in e.mimeData().urls() if u.isLocalFile()]
+        paths = [p for p in paths
+                 if p.name not in ("", "..") and ops.norm_key(p.parent) != ops.norm_key(target)
+                 and ops.norm_key(p) != ops.norm_key(target)]
+        move = e.proposedAction() == Qt.MoveAction
+        # Always report a copy: the drag source must never delete anything itself.
+        e.setDropAction(Qt.CopyAction)
+        e.accept()
+        if paths and tab.files_dropped:
+            tab.files_dropped(paths, target, move)
 
     def keyPressEvent(self, e) -> None:
         key = e.key()
@@ -241,6 +295,9 @@ class _Tab(QWidget):
         self.drive_box.setFocusPolicy(Qt.NoFocus)
         self.path_bar = QLineEdit(path)
         self.path_changed = None  # callback(path), set by FilePanel
+        self.file_activated = None  # callback(Path): Enter / double-click on a local file
+        self.context_requested = None  # callback(global QPoint): right-click in the list
+        self.files_dropped = None  # callback(paths, target_dir, move): files dropped on the list
         self.path_bar.returnPressed.connect(lambda: self.set_path(self.path_bar.text()))
         self.drive_box.currentIndexChanged.connect(self._on_drive_selected)
 
@@ -459,6 +516,7 @@ class _Tab(QWidget):
         for name, is_dir, size in [("..", True, 0)] + visible:
             item = QStandardItem(name)
             item.setData(is_dir, Qt.UserRole)
+            item.setDragEnabled(False)
             has_size = (not is_dir or show_dir_size) and name != ".."
             size_item = QStandardItem(ops.format_size(size) if has_size else "")
             size_item.setData(size if has_size else None, Qt.UserRole)
@@ -706,10 +764,26 @@ class _Tab(QWidget):
         path = self.model.filePath(idx)
         if self.model.isDir(idx) or archive.is_archive(Path(path)):
             self.set_path(path)
+        elif self.file_activated:
+            self.file_activated(Path(path))
+
+    def selection_labels(self) -> list[str]:
+        """Copyable locations of the selection (or of the current folder when nothing is selected)."""
+        if self.remote is not None:
+            base = f"{self.remote.scheme}://{self.remote.host}:{self.remote.port}"
+            return [base + p for p in self.remote_selection() or [self.remote_path]]
+        if self.archive is not None:
+            inner = self.archive_selection() or ([self.inner] if self.inner else [])
+            return [f"{self.archive}:/{i}" for i in inner] or [str(self.archive)]
+        return [str(p) for p in self.selected_paths()] or [self.current_path()]
 
 
 class FilePanel(QWidget):
     """A tabbed file panel; view/model/path_bar and path APIs act on the current tab."""
+
+    file_activated = Signal(object)  # Path of a local file opened with Enter / double-click
+    context_requested = Signal(object)  # global QPoint of a right-click in the list
+    files_dropped = Signal(object, str, bool)  # paths, target folder, move
 
     def __init__(self, path: str):
         super().__init__()
@@ -754,6 +828,9 @@ class FilePanel(QWidget):
             hdr = prev.view.header()
             tab.view.sortByColumn(hdr.sortIndicatorSection(), hdr.sortIndicatorOrder())
         tab.path_changed = lambda p, t=tab: self.tabs.setTabText(self.tabs.indexOf(t), _title(p))
+        tab.file_activated = self.file_activated.emit
+        tab.context_requested = self.context_requested.emit
+        tab.files_dropped = self.files_dropped.emit
         self.tabs.setCurrentIndex(self.tabs.addTab(tab, _title(path)))
         tab.view.setFocus()
 
@@ -858,6 +935,9 @@ class FilePanel(QWidget):
 
     def current_path(self) -> str:
         return self._tab.current_path()
+
+    def selection_labels(self) -> list[str]:
+        return self._tab.selection_labels()
 
     def selected_paths(self) -> list[Path]:
         return self._tab.selected_paths()

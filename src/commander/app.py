@@ -6,10 +6,11 @@ from ctypes import util
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from PySide6.QtCore import QByteArray, QRectF, Qt
+from PySide6.QtCore import QByteArray, QRectF, Qt, QTimer, QUrl
 from PySide6.QtGui import (
     QAction,
     QColor,
+    QDesktopServices,
     QIcon,
     QKeySequence,
     QLinearGradient,
@@ -35,7 +36,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import __version__, archive, ops, rename, updater
+from . import __version__, archive, ops, rename, shell, updater
 from .panel import FilePanel
 from .remote import FtpClient, SftpClient
 from .search_dialog import SearchDialog
@@ -61,6 +62,12 @@ class MainWindow(QMainWindow):
         self.splitter = QSplitter()
         for p in self.panels:
             self.splitter.addWidget(p)
+            p.file_activated.connect(self.open_default)
+            p.context_requested.connect(lambda pos, p=p: self.show_context_menu(p, pos))
+            # Deferred: the confirmation dialog must not run inside the drag-and-drop event.
+            p.files_dropped.connect(
+                lambda paths, target, move: QTimer.singleShot(
+                    0, lambda: self._transfer_local(list(paths), Path(target), move)))
         fn_specs = [
             ("F2", "F2 Rename", self.batch_rename),
             ("F3", "F3 View", lambda: self.open_file(edit=False)),
@@ -105,6 +112,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+H"), self, activated=self.toggle_hidden)
         QShortcut(QKeySequence("Ctrl+S"), self, activated=lambda: self.panels[self.active_index()].show_filter())
         QShortcut(QKeySequence("Ctrl+D"), self, activated=self.show_favorites)
+        QShortcut(QKeySequence("Ctrl+Shift+C"), self, activated=self.copy_path)
         for seq in ("Alt+Left", "Ctrl+["):
             QShortcut(QKeySequence(seq), self, activated=lambda: self.panels[self.active_index()].go_back())
         for seq in ("Alt+Right", "Ctrl+]"):
@@ -226,6 +234,69 @@ class MainWindow(QMainWindow):
 
     def toggle_hidden(self) -> bool:
         return self.panels[self.active_index()].toggle_hidden()
+
+    def open_default(self, path: Path) -> None:
+        """Open a local file with the application the OS associates with it."""
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+            self._error(OSError(f"no application could open {path}"))
+
+    def copy_path(self) -> None:
+        labels = self.panels[self.active_index()].selection_labels()
+        QApplication.clipboard().setText("\n".join(labels))
+
+    def reveal(self) -> None:
+        panel = self.panels[self.active_index()]
+        paths = panel.selected_paths()
+        try:
+            shell.reveal(paths[0] if paths else Path(panel.current_path()))
+        except OSError as e:
+            self._error(e)
+
+    def open_terminal(self) -> None:
+        try:
+            shell.open_terminal(Path(self.panels[self.active_index()].current_path()))
+        except OSError as e:
+            self._error(e)
+
+    def _context_menu(self, panel: FilePanel) -> QMenu:
+        """Right-click menu for `panel`; entries follow its mode (local / archive / remote)."""
+        menu = QMenu(self)
+        local = not (panel.in_archive or panel.in_remote)
+        paths = panel.selected_paths()
+        selected = bool(paths or panel.archive_selection() or panel.remote_selection())
+        if local and len(paths) == 1:
+            target = paths[0]
+            if target.is_dir() or archive.is_archive(target):
+                menu.addAction("열기", lambda: panel.set_path(str(target)))
+            else:
+                menu.addAction("열기", lambda: self.open_default(target))
+                menu.addAction("보기\tF3", lambda: self.open_file(edit=False))
+                menu.addAction("편집\tF4", lambda: self.open_file(edit=True))
+            menu.addSeparator()
+        if selected:
+            label = "복사" if local else ("추출" if panel.in_archive else "다운로드")
+            menu.addAction(f"{label}\tF5", lambda: self.transfer(move=False))
+        if local and paths:
+            menu.addAction("이동\tF6", lambda: self.transfer(move=True))
+            menu.addAction("이름 변경\tF2", self.batch_rename)
+            menu.addAction("휴지통으로 이동\tF8", self.delete)
+            menu.addAction("영구 삭제\tShift+F8", lambda: self.delete(permanent=True))
+        if selected:
+            menu.addSeparator()
+        menu.addAction("경로 복사\tCtrl+Shift+C", self.copy_path)
+        if local:
+            menu.addAction(_REVEAL_LABEL, self.reveal)
+            menu.addAction("여기서 터미널 열기", self.open_terminal)
+            menu.addSeparator()
+            menu.addAction("새 폴더\tF7", self.make_dir)
+            here = panel.current_path()
+            if not self.is_favorite(here):
+                menu.addAction("현재 폴더를 즐겨찾기에 추가", lambda: self.add_favorite(here))
+        return menu
+
+    def show_context_menu(self, panel: FilePanel, pos) -> None:
+        self._active = self.panels.index(panel)
+        self._context_menu(panel).exec(pos)
 
     def _ask(self, title: str, text: str) -> bool:
         return QMessageBox.question(self, title, text) == QMessageBox.Yes
@@ -600,6 +671,10 @@ class MainWindow(QMainWindow):
         dialog.canceled.connect(worker.cancel)
         self._update_worker = worker
         worker.start()
+
+
+_REVEAL_LABEL = {"darwin": "Finder에서 보기", "win32": "탐색기에서 보기"}.get(
+    sys.platform, "파일 관리자에서 보기")
 
 
 def _collector(errors: list[str]):

@@ -13,8 +13,8 @@
 - **즉시 실행/검증 명령**:
   - `./scripts/check.sh` — `ruff` + `pytest` + 실제 홈 디렉터리 오프스크린 스모크/성능 체크
   - `./scripts/run.sh` — 소스 직접 실행 (`--app` 옵션 시 `/Applications/commander.app` 재빌드·설치·실행)
-- **진행 중인 작업**: 아래 "로드맵 (Total Commander / ForkLift 수준)"의 **1단계**. 브랜치 `claude/vigilant-davinci-dj4vyo` (미릴리스, 버전은 아직 `v0.2.1`)
-- **다음 예정 작업**: 1단계의 남은 `[ ]` 항목을 위에서부터 순서대로
+- **최근 완료**: 아래 "로드맵 (Total Commander / ForkLift 수준)"의 **1단계 전체** (커밋 3개, 브랜치 `claude/vigilant-davinci-dj4vyo`, 미릴리스 — 버전은 아직 `v0.2.1`)
+- **다음 예정 작업**: 2단계(전송 큐). 시작 전 실기기에서 1단계 드래그 앤 드롭·휴지통 동작 확인 권장
 
 ## 로드맵 (Total Commander / ForkLift 수준)
 사용자 확정 순서: 1 → 2 → 3 → 4 → 5 → 6. **원격(FTP/SFTP) 보강은 가장 마지막(6단계)**.
@@ -29,8 +29,10 @@
 - [x] 폴더 즐겨찾기 (`Ctrl+D` 메뉴에서 이동·추가·제거, `state.json`의 `favorites`에 즉시 저장)
 - [x] 패턴 선택 (`+` 선택 / `-` 해제 / `*` 반전, 3모드 공통, `..` 제외)
 - [x] 활성 패널 추적을 `focusChanged` 기반으로 변경 (경로창·필터창에 포커스가 있어도 해당 패널이 활성)
-- [ ] 우클릭 메뉴 (열기·경로 복사·Finder/탐색기에서 보기·터미널 열기), Enter로 파일을 기본 앱에서 열기
-- [ ] 패널 간 / 외부 앱과의 드래그 앤 드롭
+- [x] Enter/더블클릭으로 로컬 파일을 기본 앱에서 열기 (`MainWindow.open_default`, `QDesktopServices`)
+- [x] 우클릭 메뉴 (모드별 항목: 열기·보기·편집·복사/추출/다운로드·이동·이름 변경·휴지통·영구 삭제·경로 복사·Finder/탐색기에서 보기·터미널 열기·새 폴더·즐겨찾기 추가), 경로 복사 `Ctrl+Shift+C` (3모드 공통), `shell.py`
+- [x] 드래그 앤 드롭: 패널 간 및 외부 앱 → 로컬 패널로 드롭 시 복사(Shift는 이동), 폴더 행 위에 놓으면 그 폴더로. F5/F6과 같은 확인·충돌 흐름(`_transfer_local`). 압축/원격 패널은 드롭 거부, `..`는 드래그 불가
+- **1단계 완료.** 남은 확인 사항: 실제 마우스 드래그(패널 간, Finder ↔ 앱)와 휴지통 이동은 헤드리스 테스트로는 이벤트/스텁 수준까지만 검증됨 → macOS/Windows 실기기에서 한 번 확인 필요
 
 ### 2단계 — 전송 큐
 - [ ] 여러 작업 동시 실행, 바이트 기준 진행률·속도·남은 시간, 일시정지/재개, 큐 패널
@@ -88,4 +90,6 @@
 - 휴지통: 테스트는 `tests/conftest.py`의 autouse 픽스처가 `ops._move_to_trash`를 가짜로 바꿔 실제 휴지통을 건드리지 않는다. 휴지통 이동 실패(지원 안 되는 볼륨 등)는 오류 요약에 표시되며 `Shift+F8`로 영구 삭제 가능
 - 개발 환경(Linux 컨테이너): PySide6 실행에 `libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3` apt 패키지 필요
 - 압축: 링크/특수 멤버는 목록·추출에서 제외, 압축 안에서 F6/F8 및 압축 패널로의 복사는 거부
+- 테스트 안전장치: `tests/conftest.py` autouse 픽스처가 휴지통(`ops._move_to_trash`), 외부 프로세스 실행(`shell.launch`), 기본 앱 열기(`QDesktopServices.openUrl`)를 모두 스텁 처리한다
+- `.git/hooks/pre-commit`은 저장소에 포함되지 않으므로 새로 클론하면 직접 설치해야 한다 (`exec ./scripts/check.sh`)
 - 테스트: QFileSystemModel이 비동기라 `_wait(cond)`로 상태를 기다릴 것 (processEvents 횟수 의존 금지)

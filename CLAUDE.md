@@ -14,9 +14,10 @@
 src/commander/
   __init__.py       # 패키지 버전 (`__version__`)
   __main__.py       # 진입점 (`python -m commander`)
-  app.py            # MainWindow, 단축키(Tab, Ctrl+T/W/F/N/H/., F2~F8), 하단 펑션키 바, 도움말/업데이트 메뉴, 앱 아이콘
-  panel.py          # FilePanel, _Tab, _View, _LocalModel, _SortProxy, 하단 상태 표시줄
-  ops.py            # 로컬 복사/이동/삭제/폴더 생성/폴더 용량 계산(dir_size)/크기 포맷 (UI 비의존)
+  app.py            # MainWindow, 단축키(Tab, Ctrl+T/W/F/N/H/./S/D, Alt+←/→, F2~F8, Shift+F8), 충돌 대화상자, 즐겨찾기, 우클릭 메뉴, 하단 펑션키 바, 도움말/업데이트 메뉴, 앱 아이콘
+  panel.py          # FilePanel, _Tab, _View(키·드래그 앤 드롭), _LocalModel, _SortProxy, 빠른 필터, 히스토리, 패턴 선택, 하단 상태 표시줄
+  ops.py            # 로컬 복사/이동/삭제/휴지통/폴더 생성(충돌 정책 on_conflict·오류 계속 on_error)/폴더 용량 계산(dir_size)/크기 포맷 (UI 비의존)
+  shell.py          # Finder/탐색기에서 보기, 터미널 열기 (UI 비의존)
   archive.py        # zip/tar(.gz/.bz2/.xz) 읽기 전용 탐색 및 추출 (UI 비의존)
   remote.py         # FtpClient, SftpClient (동일 메서드 인터페이스, UI 비의존)
   rename.py         # 일괄 이름 변경 계획(plan) 및 임시 이름 경유 적용(apply)
@@ -61,6 +62,8 @@ tests/              # 단위 및 오프스크린 UI 통합 테스트
    - 백그라운드 폴더 용량 스캔(`DirSizeWorker`)은 숨김 폴더(`.*`)를 건너뛰고, 1차 빠른 스캔(`max_dirs=60`) 후 대용량 폴더만 2차 정밀 스캔하여 체감 지연을 막는다.
 4. **보안 및 안전성**
    - 파괴적 파일 작업(삭제/덮어쓰기)은 확인 대화상자를 거치고, 테스트는 반드시 `tmp_path`에서만 수행한다.
+   - 테스트는 실제 휴지통·외부 앱·외부 프로세스를 건드리지 않는다 (`tests/conftest.py`의 autouse 스텁을 우회하지 말 것).
+   - 드롭 이벤트는 항상 `CopyAction`으로 응답한다 (이동은 앱이 직접 수행). 드래그 소스가 원본을 스스로 지우게 두지 않는다.
    - 압축 해제 및 원격 파일명 처리 시 경로 탈출(`..`, `/`, `\`, `\0`)과 로컬 심볼릭 링크 덮어쓰기 공격을 차단한다.
 
 ## 작업 및 커밋 규칙
