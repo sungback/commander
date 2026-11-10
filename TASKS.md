@@ -4,16 +4,17 @@
 상태: `[ ]` 대기 / `[~]` 진행 중 / `[x]` 완료
 
 ## 현재 상태 요약 (세션 복원용)
-- **버전**: `v0.2.1` (`pyproject.toml`)
+- **버전**: `v0.2.2` (`pyproject.toml`, `src/commander/__init__.py`) — 아직 태그/릴리스 전
 - **원격 저장소**: https://github.com/sungback/commander (`origin/main`)
 - **릴리스**:
   - `v0.1.0`: macOS 초기 릴리스 (`commander.dmg`, `commander.zip` 수동 업로드 완료)
   - `v0.2.0`: Windows 지원 + 드라이브 선택(`QComboBox`) + GitHub Actions 멀티 플랫폼(`windows-latest`, `macos-latest`) 자동 빌드·릴리스 워크플로 적용
   - `v0.2.1`: 하단 펑션키 바(F2~F8), 숨김 파일 토글(`Ctrl+H`/`Ctrl+.`), 자동 업데이트(`updater.py` / 메뉴 & 백그라운드 확인) 기능 배포
+  - `v0.2.2` (**미배포**, 브랜치 `claude/adoring-newton-as47n7`): 업데이트 확인 시 `CERTIFICATE_VERIFY_FAILED` 수정(certifi 번들) + 원클릭 자동 업데이트. `main` 병합 후 `v0.2.2` 태그를 푸시해야 릴리스가 만들어진다
 - **즉시 실행/검증 명령**:
-  - `./scripts/check.sh` — `ruff` + `pytest`(87개 테스트) + 실제 홈 디렉터리 오프스크린 스모크/성능 체크
+  - `./scripts/check.sh` — `ruff` + `pytest` + 실제 홈 디렉터리 오프스크린 스모크/성능 체크
   - `./scripts/run.sh` — 소스 직접 실행 (`--app` 옵션 시 `/Applications/commander.app` 재빌드·설치·실행)
-- **다음 예정 작업**: (대기 중 — 새로운 요청 시 여기에 기록)
+- **다음 예정 작업**: `v0.2.2` 브랜치를 `main`에 병합 → `v0.2.2` 태그 푸시(릴리스 자동 생성) → 실제 macOS/Windows 패키지에서 `도움말 > 자동 업데이트` 동작 확인. v0.2.1 설치본은 인증서 버그 때문에 스스로 업데이트하지 못하므로 v0.2.2는 한 번 수동 설치해야 한다
 
 ## MVP
 - [x] 스캐폴딩 (pyproject, venv, 진입점) — 19bb4eb
@@ -40,6 +41,7 @@
 - [x] Windows 지원 및 멀티 플랫폼 CI/릴리스 (경로/캐시 키 정규화 `ops.norm_key`, Windows 예약어·금지 문자 검증 및 대소문자 이름 변경 허용, 경로 입력창 옆 드라이브 선택 `QComboBox`, Windows `AppUserModelID`, `packaging/build_win.ps1`, `.github/workflows/release.yml`)
 - [x] UI 편의 기능 (하단 펑션키 버튼 바 `F2 Rename`~`F8 Delete` 표시 및 클릭 동작, 숨김 파일 `.*` 표시 토글 단축키 `Ctrl+H`/`Ctrl+.` 및 세션 상태 저장)
 - [x] 자동 업데이트 (`updater.py`: GitHub Release 최신 버전 확인, `도움말 > 업데이트 확인` 메뉴 및 앱 시작 시 백그라운드 확인, OS별 에셋 자동 다운로드·기존 앱 삭제·새 버전 설치 및 재실행)
+- [x] 원클릭 자동 업데이트 및 인증서 오류 수정 (v0.2.2: `updater.ssl_context()`로 OS 저장소 + certifi CA 신뢰, `도움말 > 자동 업데이트` 클릭 한 번으로 확인 → 다운로드 → 교체 → 재실행, 릴리스 SHA-256 다이제스트 검증, 교체 실패 시 `<target>.old`에서 롤백)
 
 ## 결정 / 메모
 - FTP: 평문(FTPS 미지원), 이동·삭제·폴더 생성·검색·이름 변경은 원격에서 거부, 원격↔원격 전송 불가, 연결은 UI 스레드에서 수행(최대 15초 블록), 취소는 파일 사이에서만 반영
@@ -51,4 +53,5 @@
 - `.claude/`는 전역 gitignore 대상이라 커밋되지 않음
 - 알려진 한계: ops는 첫 오류에서 중단(남은 항목 미처리), 삭제는 영구 삭제(휴지통 아님), 취소 시 이미 처리된 항목은 롤백되지 않음, 작업은 동시에 하나만 실행
 - 압축: 링크/특수 멤버는 목록·추출에서 제외, 압축 안에서 F6/F8 및 압축 패널로의 복사는 거부
+- 자동 업데이트: 메뉴 클릭은 확인 대화상자 없이 진행(사용자 요청), 시작 시 백그라운드 확인만 한 번 물음. 파일 작업 중에는 업데이트를 시작하지 않음. Windows 교체 헬퍼(PowerShell)는 실제 Windows에서 수동 검증 필요(CI는 Popen을 모킹)
 - 테스트: QFileSystemModel이 비동기라 `_wait(cond)`로 상태를 기다릴 것 (processEvents 횟수 의존 금지)

@@ -8,7 +8,7 @@ python -c "from PySide6.QtWidgets import QApplication; from commander.app import
 
 pyinstaller --noconfirm --windowed --name commander `
   --icon build/Commander.ico `
-  --paths src `
+  --paths src --collect-data certifi `
   --exclude-module PySide6.QtWebEngineCore --exclude-module PySide6.QtQml `
   --exclude-module PySide6.Qt3DCore --exclude-module PySide6.QtQuick `
   packaging/launcher.py

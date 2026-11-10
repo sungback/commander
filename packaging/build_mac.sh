@@ -18,7 +18,7 @@ pyinstaller --noconfirm --windowed --name commander \
   --icon build/Commander.icns \
   --osx-bundle-identifier com.sungback.commander \
   ${SIGN_ID:+--codesign-identity "$SIGN_ID"} \
-  --paths src --exclude-module PySide6.QtWebEngineCore --exclude-module PySide6.QtQml \
+  --paths src --collect-data certifi --exclude-module PySide6.QtWebEngineCore --exclude-module PySide6.QtQml \
   --exclude-module PySide6.Qt3DCore --exclude-module PySide6.QtQuick \
   packaging/launcher.py
 ditto -c -k --keepParent dist/commander.app dist/commander.zip
