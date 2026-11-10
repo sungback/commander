@@ -1,5 +1,6 @@
 import os
 import posixpath
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -9,12 +10,14 @@ from PySide6.QtCore import (
     QSignalBlocker,
     QSortFilterProxyModel,
     Qt,
+    Signal,
 )
 from PySide6.QtGui import QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QComboBox,
     QFileSystemModel,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -35,6 +38,18 @@ def list_drives() -> list[str]:
     return drives or [os.path.sep]
 
 
+def name_matches(name: str, pattern: str) -> bool:
+    """Case-insensitive match against ';'-separated masks; a mask without wildcards is a substring."""
+    masks = [m.strip().lower() for m in pattern.split(";") if m.strip()]
+    if not masks:
+        return True
+    low = name.lower()
+    return any(fnmatchcase(low, m) if any(c in m for c in "*?[") else m in low for m in masks)
+
+
+_HEADERS = ("이름", "크기", "종류", "수정한 날짜")
+
+
 class _LocalModel(QFileSystemModel):
     """QFileSystemModel that also displays calculated directory sizes."""
 
@@ -50,6 +65,11 @@ class _LocalModel(QFileSystemModel):
         idx = self.index(path, 1)
         if idx.isValid():
             self.dataChanged.emit(idx, idx, [Qt.DisplayRole])
+
+    def headerData(self, section: int, orientation, role: int = Qt.DisplayRole):
+        if orientation == Qt.Horizontal and role == Qt.DisplayRole and 0 <= section < len(_HEADERS):
+            return _HEADERS[section]
+        return super().headerData(section, orientation, role)
 
     def data(self, index: QModelIndex, role: int = Qt.DisplayRole):
         if role == Qt.DisplayRole and index.column() == 1 and self.isDir(index):
@@ -72,6 +92,7 @@ class _SortProxy(QSortFilterProxyModel):
         super().__init__(parent)
         self._src = src
         self.show_hidden = show_hidden
+        self.name_filter = ""
         self._root_src = QModelIndex()
         self.setSourceModel(src)
         self.setDynamicSortFilter(True)
@@ -96,6 +117,12 @@ class _SortProxy(QSortFilterProxyModel):
         self.show_hidden = show
         self._refresh_filter()
 
+    def set_name_filter(self, pattern: str) -> None:
+        if self.name_filter == pattern:
+            return
+        self.name_filter = pattern
+        self._refresh_filter()
+
     def setRootPath(self, path: str) -> QModelIndex:
         self._root_src = self._src.setRootPath(path)
         if not self._root_src.isValid():
@@ -104,18 +131,26 @@ class _SortProxy(QSortFilterProxyModel):
         return self.mapFromSource(self._root_src)
 
     def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:
-        if self.show_hidden or not self._root_src.isValid() or source_parent != self._root_src:
+        if not self._root_src.isValid() or source_parent != self._root_src:
             return True
         idx = self._src.index(source_row, 0, source_parent)
         name = self._src.fileName(idx)
         if name == "..":
             return True
-        return not name.startswith(".") and not self._src.fileInfo(idx).isHidden()
+        if not self.show_hidden and (name.startswith(".") or self._src.fileInfo(idx).isHidden()):
+            return False
+        return name_matches(name, self.name_filter)
 
     def index(self, row_or_path, column: int = 0, parent: QModelIndex | None = None) -> QModelIndex:
         if isinstance(row_or_path, str):
             return self.mapFromSource(self._src.index(row_or_path, column))
         return super().index(row_or_path, column, QModelIndex() if parent is None else parent)
+
+    def flags(self, index: QModelIndex):
+        f = super().flags(index)
+        if self.fileName(index.siblingAtColumn(0)) == "..":
+            f &= ~Qt.ItemIsDragEnabled  # never hand the parent folder to another app
+        return f
 
     def filePath(self, index: QModelIndex) -> str:
         p = self._src.filePath(self.mapToSource(index))
@@ -156,12 +191,82 @@ class _SortProxy(QSortFilterProxyModel):
         return l_name.lower() < r_name.lower()
 
 
+_SELECT_KEYS = (Qt.Key_Plus, Qt.Key_Minus, Qt.Key_Asterisk)
+FLAT_LIMIT = 20_000
+
+
+class _FilterEdit(QLineEdit):
+    """Quick filter box: Esc clears and closes, Enter/Down returns to the file list."""
+
+    def __init__(self, tab: "_Tab"):
+        super().__init__()
+        self._tab = tab
+        self.setPlaceholderText("필터 (텍스트 또는 *.ext;*.md) — Esc로 해제")
+        self.setClearButtonEnabled(True)
+        self.hide()
+
+    def keyPressEvent(self, e) -> None:
+        if e.key() == Qt.Key_Escape:
+            self._tab.clear_filter()
+        elif e.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Down):
+            self._tab.view.setFocus()
+        else:
+            super().keyPressEvent(e)
+
+
 class _View(QTreeView):
     """Tree view with Total Commander style keys: Enter/Backspace/Space/Insert."""
 
     def __init__(self, tab: "_Tab"):
         super().__init__()
         self._tab = tab
+        self.setDragDropMode(QTreeView.DragDrop)
+        self.setDefaultDropAction(Qt.CopyAction)
+        self.setDropIndicatorShown(False)
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._on_context_menu)
+
+    def _on_context_menu(self, pos) -> None:
+        idx = self.indexAt(pos)
+        if idx.isValid() and not self.selectionModel().isRowSelected(idx.row(), idx.parent()):
+            self.setCurrentIndex(idx.siblingAtColumn(0))
+        elif not idx.isValid():
+            self.clearSelection()
+        if self._tab.context_requested:
+            self._tab.context_requested(self.viewport().mapToGlobal(pos))
+
+    def _accepts(self, e) -> bool:
+        """Dropped files are only taken by a local folder listing."""
+        return e.mimeData().hasUrls() and not (self._tab.in_archive or self._tab.in_remote)
+
+    def dragEnterEvent(self, e) -> None:
+        if self._accepts(e):
+            e.acceptProposedAction()
+        else:
+            e.ignore()
+
+    def dragMoveEvent(self, e) -> None:
+        self.dragEnterEvent(e)
+
+    def dropEvent(self, e) -> None:
+        if not self._accepts(e):
+            e.ignore()
+            return
+        tab = self._tab
+        target = tab.current_path()
+        idx = self.indexAt(e.position().toPoint()).siblingAtColumn(0)
+        if not tab.flat and idx.isValid() and tab.model.isDir(idx) and tab.model.fileName(idx) != "..":
+            target = tab.model.filePath(idx)
+        paths = [Path(u.toLocalFile()) for u in e.mimeData().urls() if u.isLocalFile()]
+        paths = [p for p in paths
+                 if p.name not in ("", "..") and ops.norm_key(p.parent) != ops.norm_key(target)
+                 and ops.norm_key(p) != ops.norm_key(target)]
+        move = e.proposedAction() == Qt.MoveAction
+        # Always report a copy: the drag source must never delete anything itself.
+        e.setDropAction(Qt.CopyAction)
+        e.accept()
+        if paths and tab.files_dropped:
+            tab.files_dropped(paths, target, move)
 
     def keyPressEvent(self, e) -> None:
         key = e.key()
@@ -170,6 +275,13 @@ class _View(QTreeView):
             self._tab._open(cur)
         elif key == Qt.Key_Backspace:
             self._tab.go_up()
+        elif key == Qt.Key_Escape and self._tab.filter_text:
+            self._tab.clear_filter()
+        elif key in _SELECT_KEYS and not e.modifiers() & (Qt.ControlModifier | Qt.AltModifier):
+            if key == Qt.Key_Asterisk:
+                self._tab.invert_selection()
+            else:
+                self._tab.prompt_select(select=key == Qt.Key_Plus)
         elif key in (Qt.Key_Space, Qt.Key_Insert) and cur.isValid():
             self.selectionModel().select(
                 cur, QItemSelectionModel.Toggle | QItemSelectionModel.Rows)
@@ -192,6 +304,10 @@ class _Tab(QWidget):
         self.drive_box.setFocusPolicy(Qt.NoFocus)
         self.path_bar = QLineEdit(path)
         self.path_changed = None  # callback(path), set by FilePanel
+        self.file_activated = None  # callback(Path): Enter / double-click on a local file
+        self.context_requested = None  # callback(global QPoint): right-click in the list
+        self.files_dropped = None  # callback(paths, target_dir, move): files dropped on the list
+        self.current_changed = None  # callback(): the cursor moved to another row
         self.path_bar.returnPressed.connect(lambda: self.set_path(self.path_bar.text()))
         self.drive_box.currentIndexChanged.connect(self._on_drive_selected)
 
@@ -203,9 +319,16 @@ class _Tab(QWidget):
         self.remote: FtpClient | SftpClient | None = None  # set while browsing an FTP server
         self.remote_path = "/"
         self.local_dir = path  # last local folder, kept while browsing a remote
+        self.flat = False  # local folder shown with all files of its subfolders in one list
+        self.hidden_columns: set[int] = set()  # column indexes hidden by the user's settings
         self._size_worker: DirSizeWorker | None = None
         self._pending_cur: str | None = None
         self._pending_sel: set[str] = set()
+        self._history: list[str] = [path]
+        self._hist_pos = 0
+        self.filter_text = ""
+        self.filter_bar = _FilterEdit(self)
+        self.filter_bar.textChanged.connect(self.set_filter)
         self._sync_drive_box()
 
         self.view = _View(self)
@@ -236,6 +359,7 @@ class _Tab(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(top_bar)
         layout.addWidget(self.view)
+        layout.addWidget(self.filter_bar)
         layout.addWidget(self.status_bar)
 
     def _sync_drive_box(self) -> None:
@@ -276,7 +400,9 @@ class _Tab(QWidget):
         if self.model.show_hidden == show:
             return
         self.model.set_show_hidden(show)
-        if (self.in_archive or self.in_remote) and self._raw_rows is not None:
+        if self.flat:
+            self.show_flat()  # hidden files are filtered while walking the tree
+        elif self._raw_rows is not None:
             self._show_rows(*self._raw_rows)
         else:
             if show:
@@ -287,13 +413,66 @@ class _Tab(QWidget):
         self.set_show_hidden(not self.show_hidden)
         return self.show_hidden
 
-    def set_path(self, path: str) -> None:
+    def show_filter(self) -> None:
+        self.filter_bar.show()
+        self.filter_bar.setFocus()
+        self.filter_bar.selectAll()
+
+    def set_filter(self, pattern: str) -> None:
+        """Show only entries matching `pattern` ('..' always stays) in any of the three modes."""
+        if pattern == self.filter_text:
+            return
+        self.filter_text = pattern
+        if self.filter_bar.text() != pattern:
+            with QSignalBlocker(self.filter_bar):
+                self.filter_bar.setText(pattern)
+        if pattern:
+            self.filter_bar.show()
+        self.model.set_name_filter(pattern)
+        if self._raw_rows is not None:
+            self._show_rows(*self._raw_rows)
+        else:
+            self.update_status()
+
+    def clear_filter(self) -> None:
+        self.set_filter("")
+        self.filter_bar.hide()
+        self.view.setFocus()
+
+    def _reset_filter(self) -> None:
+        """Drop the filter without re-rendering; used right before showing another folder."""
+        self.filter_text = ""
+        with QSignalBlocker(self.filter_bar):
+            self.filter_bar.clear()
+        self.filter_bar.hide()
+        self.model.set_name_filter("")
+
+    def _record_history(self, path: str) -> None:
+        if self._history[self._hist_pos] == path:
+            return
+        del self._history[self._hist_pos + 1:]
+        self._history.append(path)
+        del self._history[:-50]
+        self._hist_pos = len(self._history) - 1
+
+    def go_history(self, step: int) -> bool:
+        """Move back (-1) / forward (+1) through visited local folders, skipping vanished ones."""
+        pos = self._hist_pos + step
+        while 0 <= pos < len(self._history):
+            if Path(self._history[pos]).is_dir():
+                self._hist_pos = pos
+                self.set_path(self._history[pos], record=False)
+                return True
+            pos += step
+        return False
+
+    def set_path(self, path: str, record: bool = True) -> None:
         p = Path(path)
         if archive.is_archive(p):
             try:
                 self.open_archive(p)
             except (OSError, ValueError) as e:
-                QMessageBox.critical(self, "Error", f"{type(e).__name__}: {e}")
+                QMessageBox.critical(self, "오류", f"{type(e).__name__}: {e}")
             return
         if not p.is_dir():
             return
@@ -304,8 +483,11 @@ class _Tab(QWidget):
             self._pending_cur = None
             self._pending_sel.clear()
             self._leave_archive()
+            self._reset_filter()
             self.view.setRootIndex(idx)
             self.local_dir = self.model.filePath(idx)
+            if record:
+                self._record_history(self.local_dir)
             self.path_bar.setText(self.local_dir)
             self._sync_drive_box()
             self._scan_dir_sizes()
@@ -313,11 +495,54 @@ class _Tab(QWidget):
             if self.path_changed:
                 self.path_changed(self.local_dir)
 
+    def show_flat(self) -> None:
+        """Flat (branch) view: every file below the current local folder in one list.
+
+        Still local mode: selections are real paths, so every file operation keeps working.
+        """
+        if self.archive is not None or self.remote is not None:
+            return
+        root = self.local_dir
+        rows: list[tuple[str, bool, int]] = []
+        truncated = False
+        for dirpath, dirnames, filenames in os.walk(root):
+            if not self.show_hidden:
+                dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+            dirnames.sort(key=str.lower)
+            for name in sorted(filenames, key=str.lower):
+                if not self.show_hidden and name.startswith("."):
+                    continue
+                full = os.path.join(dirpath, name)
+                try:
+                    size = os.lstat(full).st_size
+                except OSError:
+                    continue
+                rows.append((os.path.relpath(full, root), False, size))
+                if len(rows) >= FLAT_LIMIT:
+                    truncated = True
+                    break
+            if truncated:
+                break
+        if not self.flat:
+            self._reset_filter()
+        self.flat = True
+        note = f", 처음 {FLAT_LIMIT}개만 표시" if truncated else ""
+        self._show_rows(rows, f"{root}  [평면 보기{note}]", root)
+
+    def toggle_flat(self) -> bool:
+        if self.flat:
+            self.set_path(self.local_dir)
+        else:
+            self.show_flat()
+        return self.flat
+
     def open_archive(self, path: Path, inner: str = "") -> None:
         if self.archive != path:
             self._entries = archive.read_entries(path)  # raises before any state changes
             self._leave_archive()
             self.archive = path
+        if self._raw_rows is None or inner != self.inner:
+            self._reset_filter()
         self.inner = inner
         rows = [(e.path.rsplit("/", 1)[-1], e.is_dir, e.size)
                 for e in archive.children(self._entries, inner)]
@@ -328,6 +553,8 @@ class _Tab(QWidget):
         if self.remote is not client:
             self._leave_archive()
             self.remote = client
+        if self._raw_rows is None or path != self.remote_path:
+            self._reset_filter()
         self.remote_path = path
         rows = [(e.name, e.is_dir, e.size) for e in entries]
         self._show_rows(rows, f"{client.scheme}://{client.host}:{client.port}{path}", f"{client.host}{path}")
@@ -336,13 +563,15 @@ class _Tab(QWidget):
                    show_dir_size: bool = False) -> None:
         self._stop_size_worker()
         self._raw_rows = (rows, bar, title, show_dir_size)
-        visible = [r for r in rows if self.show_hidden or not r[0].startswith(".")]
+        visible = [r for r in rows if (self.show_hidden or self.flat or not r[0].startswith("."))
+                   and name_matches(r[0], self.filter_text)]
         m = self.arch_model
         m.clear()
-        m.setHorizontalHeaderLabels(["Name", "Size"])
+        m.setHorizontalHeaderLabels(["이름", "크기"])
         for name, is_dir, size in [("..", True, 0)] + visible:
             item = QStandardItem(name)
             item.setData(is_dir, Qt.UserRole)
+            item.setDragEnabled(False)
             has_size = (not is_dir or show_dir_size) and name != ".."
             size_item = QStandardItem(ops.format_size(size) if has_size else "")
             size_item.setData(size if has_size else None, Qt.UserRole)
@@ -350,6 +579,7 @@ class _Tab(QWidget):
         self.view.setSortingEnabled(False)  # entries are pre-sorted, ".." first
         self.view.setModel(m)
         self._bind_selection()
+        self._apply_columns()
         self.path_bar.setText(bar)
         self.update_status()
         if self.path_changed:
@@ -361,6 +591,7 @@ class _Tab(QWidget):
             self.remote.close()
             self.remote = None
         self._raw_rows = None
+        self.flat = False
         if self.archive is None and self.view.model() is self.model:
             return
         self.archive = None
@@ -371,11 +602,24 @@ class _Tab(QWidget):
         self.view.setSortingEnabled(True)
         self.view.sortByColumn(col, order)
         self.view.setColumnWidth(0, 260)
+        self._apply_columns()
+
+    def set_hidden_columns(self, hidden: set[int]) -> None:
+        self.hidden_columns = set(hidden)
+        self._apply_columns()
+
+    def _apply_columns(self) -> None:
+        """Header state is lost whenever the view's model is swapped, so this is re-applied."""
+        count = self.view.model().columnCount()
+        for col in range(1, max(count, 4)):
+            if col < count:
+                self.view.setColumnHidden(col, col in self.hidden_columns)
 
     def _bind_selection(self) -> None:
         sel = self.view.selectionModel()
         if sel is not None:
             sel.selectionChanged.connect(lambda *_: self.update_status())
+            sel.currentChanged.connect(lambda *_: self.current_changed and self.current_changed())
 
     def _on_rows_changed(self, parent: QModelIndex, first: int, last: int) -> None:
         self._apply_pending_selection()
@@ -457,7 +701,7 @@ class _Tab(QWidget):
                 pass
 
     def _scan_dir_sizes(self) -> None:
-        if self.archive is not None or self.remote is not None:
+        if self.archive is not None or self.remote is not None or self.flat:
             return
         self._stop_size_worker()
         worker = DirSizeWorker(Path(self.local_dir), include_hidden=self.show_hidden)
@@ -466,7 +710,7 @@ class _Tab(QWidget):
         worker.start()
 
     def _entry_size(self, row_idx: QModelIndex) -> int:
-        if self.archive is not None or self.remote is not None:
+        if self.archive is not None or self.remote is not None or self.flat:
             val = self.arch_model.itemFromIndex(row_idx.siblingAtColumn(1)).data(Qt.UserRole)
             return val or 0
         idx0 = row_idx.siblingAtColumn(0)
@@ -495,14 +739,52 @@ class _Tab(QWidget):
         sel_rows = [i for i in self.view.selectionModel().selectedRows(0) if i.data() != ".."]
         sel_bytes = sum(self._entry_size(i) for i in sel_rows)
         self.status_bar.setText(
-            f"{len(sel_rows)} / {total_items} selected "
+            f"{len(sel_rows)} / {total_items}개 선택 "
             f"({ops.format_size(sel_bytes)} / {ops.format_size(total_bytes)})"
         )
+
+    def _name_rows(self) -> list[QModelIndex]:
+        """Column-0 indexes of every listed entry except '..' (works in all three modes)."""
+        m = self.view.model()
+        root = self.view.rootIndex() if m is self.model else QModelIndex()
+        rows = (m.index(r, 0, root) for r in range(m.rowCount(root)))
+        return [i for i in rows if i.data() != ".."]
+
+    def select_pattern(self, pattern: str, select: bool = True) -> int:
+        """Select (or deselect) entries matching the masks; returns how many matched."""
+        flag = QItemSelectionModel.Select if select else QItemSelectionModel.Deselect
+        hits = [i for i in self._name_rows() if name_matches(i.data(), pattern)]
+        for i in hits:
+            self.view.selectionModel().select(i, flag | QItemSelectionModel.Rows)
+        return len(hits)
+
+    def select_names(self, names) -> int:
+        """Replace the selection with the entries whose names are in `names`."""
+        self.view.clearSelection()
+        hits = [i for i in self._name_rows() if i.data() in names]
+        for i in hits:
+            self.view.selectionModel().select(
+                i, QItemSelectionModel.Select | QItemSelectionModel.Rows)
+        return len(hits)
+
+    def invert_selection(self) -> None:
+        for i in self._name_rows():
+            self.view.selectionModel().select(
+                i, QItemSelectionModel.Toggle | QItemSelectionModel.Rows)
+
+    def prompt_select(self, select: bool = True) -> None:
+        title = "선택" if select else "선택 해제"
+        pattern, ok = QInputDialog.getText(
+            self, title, "마스크 (예: *.txt;*.md 또는 이름 일부):", QLineEdit.Normal, "*")
+        if ok and pattern.strip():
+            self.select_pattern(pattern, select)
 
     def go_up(self) -> None:
         if self.remote is not None:
             if self.remote_path != "/":
                 self.open_remote(self.remote, posixpath.dirname(self.remote_path.rstrip("/")) or "/")
+        elif self.flat:
+            self.set_path(self.local_dir)  # '..' / Backspace leaves the flat view
         elif self.archive is None:
             self.set_path(str(Path(self.current_path()).parent))
         elif self.inner:
@@ -516,12 +798,17 @@ class _Tab(QWidget):
             return self.local_dir
         if self.archive is not None:
             return str(self.archive.parent)
+        if self.flat:
+            return self.local_dir
         return self.model.filePath(self.view.rootIndex())
 
     def selected_paths(self) -> list[Path]:
         if self.archive is not None or self.remote is not None:
             return []
-        rows = self.view.selectionModel().selectedRows(0)
+        if self.flat:
+            rows = sorted(self.view.selectionModel().selectedRows(0), key=lambda i: i.row())
+            return [Path(self.local_dir) / i.data() for i in rows if i.data() != ".."]
+        rows = sorted(self.view.selectionModel().selectedRows(0), key=lambda i: i.row())
         return [Path(self.model.filePath(i)) for i in rows if self.model.fileName(i) != ".."]
 
     def archive_selection(self) -> list[str]:
@@ -548,7 +835,7 @@ class _Tab(QWidget):
                 elif item.data(Qt.UserRole):
                     self.open_remote(self.remote, posixpath.join(self.remote_path, item.text()))
             except OSError as e:
-                QMessageBox.critical(self, "Error", f"{type(e).__name__}: {e}")
+                QMessageBox.critical(self, "오류", f"{type(e).__name__}: {e}")
             return
         if self.archive is not None:
             item = self.arch_model.itemFromIndex(idx.siblingAtColumn(0))
@@ -557,16 +844,51 @@ class _Tab(QWidget):
             elif item.data(Qt.UserRole):
                 self.open_archive(self.archive, (self.inner + "/" if self.inner else "") + item.text())
             return
+        if self.flat:
+            name = idx.siblingAtColumn(0).data()
+            if name == "..":
+                self.go_up()
+            elif self.file_activated:
+                self.file_activated(Path(self.local_dir) / name)
+            return
         if self.model.fileName(idx) == "..":
             self.go_up()
             return
         path = self.model.filePath(idx)
         if self.model.isDir(idx) or archive.is_archive(Path(path)):
             self.set_path(path)
+        elif self.file_activated:
+            self.file_activated(Path(path))
+
+    def current_local_path(self) -> Path | None:
+        """Local path of the row under the cursor; None in archives / remotes and on '..'."""
+        if self.archive is not None or self.remote is not None:
+            return None
+        idx = self.view.currentIndex().siblingAtColumn(0)
+        if self.flat:
+            return Path(self.local_dir) / idx.data() if idx.isValid() and idx.data() != ".." else None
+        if not idx.isValid() or self.model.fileName(idx) == "..":
+            return None
+        return Path(self.model.filePath(idx))
+
+    def selection_labels(self) -> list[str]:
+        """Copyable locations of the selection (or of the current folder when nothing is selected)."""
+        if self.remote is not None:
+            base = f"{self.remote.scheme}://{self.remote.host}:{self.remote.port}"
+            return [base + p for p in self.remote_selection() or [self.remote_path]]
+        if self.archive is not None:
+            inner = self.archive_selection() or ([self.inner] if self.inner else [])
+            return [f"{self.archive}:/{i}" for i in inner] or [str(self.archive)]
+        return [str(p) for p in self.selected_paths()] or [self.current_path()]
 
 
 class FilePanel(QWidget):
     """A tabbed file panel; view/model/path_bar and path APIs act on the current tab."""
+
+    file_activated = Signal(object)  # Path of a local file opened with Enter / double-click
+    context_requested = Signal(object)  # global QPoint of a right-click in the list
+    files_dropped = Signal(object, str, bool)  # paths, target folder, move
+    current_changed = Signal()  # cursor row, folder or tab changed
 
     def __init__(self, path: str):
         super().__init__()
@@ -574,6 +896,8 @@ class FilePanel(QWidget):
         self.tabs.setDocumentMode(True)
         self.tabs.setTabsClosable(True)
         self.tabs.tabCloseRequested.connect(self.close_tab)
+        self.tabs.currentChanged.connect(lambda _: self.current_changed.emit())
+        self._hidden_columns: set[int] = set()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.tabs)
@@ -610,7 +934,13 @@ class FilePanel(QWidget):
         if prev is not None:
             hdr = prev.view.header()
             tab.view.sortByColumn(hdr.sortIndicatorSection(), hdr.sortIndicatorOrder())
-        tab.path_changed = lambda p, t=tab: self.tabs.setTabText(self.tabs.indexOf(t), _title(p))
+        tab.path_changed = lambda p, t=tab: (
+            self.tabs.setTabText(self.tabs.indexOf(t), _title(p)), self.current_changed.emit())
+        tab.set_hidden_columns(self._hidden_columns)
+        tab.file_activated = self.file_activated.emit
+        tab.context_requested = self.context_requested.emit
+        tab.files_dropped = self.files_dropped.emit
+        tab.current_changed = self.current_changed.emit
         self.tabs.setCurrentIndex(self.tabs.addTab(tab, _title(path)))
         tab.view.setFocus()
 
@@ -648,6 +978,34 @@ class FilePanel(QWidget):
 
     def set_path(self, path: str) -> None:
         self._tab.set_path(path)
+
+    def go_back(self) -> bool:
+        return self._tab.go_history(-1)
+
+    def go_forward(self) -> bool:
+        return self._tab.go_history(1)
+
+    @property
+    def filter_text(self) -> str:
+        return self._tab.filter_text
+
+    def show_filter(self) -> None:
+        self._tab.show_filter()
+
+    def set_filter(self, pattern: str) -> None:
+        self._tab.set_filter(pattern)
+
+    def clear_filter(self) -> None:
+        self._tab.clear_filter()
+
+    def select_pattern(self, pattern: str, select: bool = True) -> int:
+        return self._tab.select_pattern(pattern, select)
+
+    def select_names(self, names) -> int:
+        return self._tab.select_names(names)
+
+    def invert_selection(self) -> None:
+        self._tab.invert_selection()
 
     @property
     def show_hidden(self) -> bool:
@@ -690,6 +1048,30 @@ class FilePanel(QWidget):
 
     def current_path(self) -> str:
         return self._tab.current_path()
+
+    def selection_labels(self) -> list[str]:
+        return self._tab.selection_labels()
+
+    def current_local_path(self) -> Path | None:
+        return self._tab.current_local_path()
+
+    def set_hidden_columns(self, hidden: set[int]) -> None:
+        self._hidden_columns = set(hidden)
+        for i in range(self.tabs.count()):
+            self.tabs.widget(i).set_hidden_columns(hidden)
+
+    @property
+    def flat(self) -> bool:
+        return self._tab.flat
+
+    def toggle_flat(self) -> bool:
+        return self._tab.toggle_flat()
+
+    def refresh_flat(self) -> None:
+        """Re-read flat views (they are snapshots; the local model refreshes itself)."""
+        for i in range(self.tabs.count()):
+            if self.tabs.widget(i).flat:
+                self.tabs.widget(i).show_flat()
 
     def selected_paths(self) -> list[Path]:
         return self._tab.selected_paths()

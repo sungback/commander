@@ -14,17 +14,33 @@
 src/commander/
   __init__.py       # 패키지 버전 (`__version__`)
   __main__.py       # 진입점 (`python -m commander`)
-  app.py            # MainWindow, 단축키(Tab, Ctrl+T/W/F/N/H/., F2~F8), 하단 펑션키 바, 도움말/업데이트 메뉴, 앱 아이콘
-  panel.py          # FilePanel, _Tab, _View, _LocalModel, _SortProxy, 하단 상태 표시줄
-  ops.py            # 로컬 복사/이동/삭제/폴더 생성/폴더 용량 계산(dir_size)/크기 포맷 (UI 비의존)
-  archive.py        # zip/tar(.gz/.bz2/.xz) 읽기 전용 탐색 및 추출 (UI 비의존)
+  app.py            # MainWindow: 명령 핸들러, 메뉴/단축키(QAction), 충돌 대화상자, 즐겨찾기, 우클릭 메뉴, 큐·Quick View·명령줄·도구 버튼·펑션키 바 배치, 설정 적용, 업데이트, 앱 아이콘
+  commands.py       # 명령 표: id·메뉴·기본 단축키 (플랫폼별), 단축키 충돌 검사 (UI 비의존)
+  settings.py       # 사용자 설정(settings.json) 로드/검증/저장 (UI 비의존)
+  settings_dialog.py# 설정 대화상자 (일반 / 단축키 / 사용자 도구)
+  theme.py          # 시스템/밝게/어둡게 테마 적용
+  panel.py          # FilePanel, _Tab, _View(키·드래그 앤 드롭), _LocalModel, _SortProxy, 빠른 필터, 히스토리, 패턴 선택, 하단 상태 표시줄
+  ops.py            # 로컬 복사/이동/삭제/휴지통/폴더 생성(충돌 정책 on_conflict·오류 계속 on_error)/폴더 용량 계산(dir_size)/크기 포맷 (UI 비의존)
+  shell.py          # Finder/탐색기에서 보기, 터미널 열기, 사용자 도구 argv 구성, 명령줄 실행(run_capture) (UI 비의존)
+  transfer.py       # 로컬 복사/이동 엔진: 바이트 진행률(Stats), 일시정지/취소(Control), 폴더 병합, 임시 파일 경유 교체 (UI 비의존)
+  queue_panel.py    # 하단 큐 패널: 백그라운드 Job별 진행률·속도·남은 시간, Pause/Cancel
+  archive.py        # zip/tar(.gz/.bz2/.xz) 탐색·추출·생성(create) (UI 비의존)
   remote.py         # FtpClient, SftpClient (동일 메서드 인터페이스, UI 비의존)
-  rename.py         # 일괄 이름 변경 계획(plan) 및 임시 이름 경유 적용(apply)
-  search.py         # 글롭/부분 문자열 재귀 파일 검색 제너레이터
+  rename.py         # 다중 이름 변경 계획(plan / plan_names: 마스크·카운터·대소문자) 및 임시 이름 경유 적용(apply)
+  rename_dialog.py  # F2 다중 이름 변경 대화상자 (실시간 미리보기)
+  search.py         # 글롭/부분 문자열 재귀 파일 검색 제너레이터, 파일 내용 검색(contains)
+  checksum.py       # SHA-256/SHA-1/MD5 계산, 체크섬 목록 작성·파싱·검증 (UI 비의존)
+  compare.py        # 폴더 비교(differing_names), 파일 동일성, 줄 단위 좌우 정렬 diff (UI 비의존)
+  sync.py           # 폴더 동기화 계획(scan)과 실행(apply) (UI 비의존)
+  sync_dialog.py    # 폴더 동기화 검토 대화상자
+  diff_dialog.py    # 좌우 나란히 파일 내용 비교 대화상자
+  dialogs.py        # 공용 TextDialog (결과 텍스트 표시·복사·저장)
   search_dialog.py  # Ctrl+F 검색 대화상자 (스트리밍 결과 + 선택 폴더 이동)
   updater.py        # GitHub Releases 최신 버전 조회, 에셋 다운로드·스테이징, 기존 앱 교체 및 재실행 (UI 비의존)
-  viewer.py         # F3 뷰어 / F4 에디터 (1MB 이하 UTF-8만 편집 허용)
-  workers.py        # Worker(파일 작업), SearchWorker(검색), DirSizeWorker(폴더 용량), UpdateCheck/DownloadWorker
+  viewer.py         # F3 뷰어(PreviewWidget 사용) / F4 에디터 (1MB 이하 UTF-8만 편집 허용)
+  preview.py        # 인코딩 판별, hex 덤프, 조각 단위 리더 (UI 비의존)
+  preview_widget.py # 텍스트/hex/이미지 미리보기 위젯 (F3 뷰어와 Quick View 공용)
+  workers.py        # Job(큐에 표시되는 백그라운드 작업), Worker(모달 원격 전송), SearchWorker(검색), DirSizeWorker(폴더 용량), UpdateCheck/DownloadWorker
 packaging/
   launcher.py       # PyInstaller 진입점
   build_mac.sh      # commander.app / commander.zip / commander.dmg 빌드 스크립트
@@ -51,6 +67,7 @@ tests/              # 단위 및 오프스크린 UI 통합 테스트
      - **로컬**: `_SortProxy(_LocalModel)` 사용, 모든 파일 작업(F2~F8, Ctrl+F) 가능.
      - **압축 (`in_archive`)**: `arch_model`(`QStandardItemModel`) 사용, 읽기/F5 추출만 가능(수정 작업 거부), 폴더 용량은 압축 엔트리 합산으로 즉시 표시.
      - **원격 (`in_remote`)**: `arch_model` 사용, 탐색 및 F5 업로드/다운로드 가능.
+     - **평면 보기 (`flat`)**는 4번째 모드가 아니라 로컬 모드의 표시 방식이다: `arch_model`에 상대 경로를 나열하지만 `selected_paths()`/`current_path()`는 실제 로컬 경로를 돌려준다. 패널 코드에서 "행 목록 모델인가"는 `_raw_rows is not None`으로, "로컬이 아닌가"는 `in_archive or in_remote`로 구분한다.
 2. **목록 정렬 및 `..` 최상단 고정**
    - 로컬(`_SortProxy`), 압축, 원격 모든 모드와 모든 컬럼/정렬 방향(오름·내림차순)에서 첫 번째 행(`row 0`)은 항상 `..`이어야 하며, 그 아래로 폴더 → 파일 순서를 유지한다.
    - `panel.model`은 외부에 프록시 인덱스 기준으로 `index()`, `filePath()`, `fileName()`, `isDir()`, `size()`를 일관되게 노출해야 한다 (`_fs_model` 소스 인덱스와 혼용 금지).
@@ -58,10 +75,20 @@ tests/              # 단위 및 오프스크린 UI 통합 테스트
    - `QFileSystemModel`은 비동기이므로 `rowsInserted`/`directoryLoaded`가 여러 번 발생한다. 이미 실행 중인 `DirSizeWorker`를 불필요하게 재시작하지 않는다.
    - `QThread`가 실행 중일 때 프로세스가 종료되면 `QThread: Destroyed while thread is still running (SIGABRT, exit 134)`가 발생하므로 백그라운드 워커는 `atexit` 또는 탭 닫기 시 안전하게 정리한다.
    - 64비트 바이트 크기를 Qt `Signal`로 전달할 때는 32비트 C++ `int` 오버플로를 피하기 위해 `Signal(str, object)`를 사용한다.
+   - `Job`의 진행 상황은 시그널로 보내지 않고 큐 패널 타이머가 `job.stats`를 폴링한다. 워커 스레드에서 사용자에게 물어야 할 때는 `Job.ask` → `conflict` 시그널 → UI 스레드의 `Job.answer` 경로만 사용한다 (워커 스레드에서 위젯·대화상자 직접 호출 금지).
+   - 원격(FTP/SFTP) 클라이언트는 스레드 안전하지 않으므로 탐색과 전송이 동시에 같은 연결을 쓰게 만들지 않는다 (현재 원격 전송만 모달인 이유).
    - 백그라운드 폴더 용량 스캔(`DirSizeWorker`)은 숨김 폴더(`.*`)를 건너뛰고, 1차 빠른 스캔(`max_dirs=60`) 후 대용량 폴더만 2차 정밀 스캔하여 체감 지연을 막는다.
 4. **보안 및 안전성**
    - 파괴적 파일 작업(삭제/덮어쓰기)은 확인 대화상자를 거치고, 테스트는 반드시 `tmp_path`에서만 수행한다.
+   - 테스트는 실제 휴지통·외부 앱·외부 프로세스를 건드리지 않는다 (`tests/conftest.py`의 autouse 스텁을 우회하지 말 것).
+   - 드롭 이벤트는 항상 `CopyAction`으로 응답한다 (이동은 앱이 직접 수행). 드래그 소스가 원본을 스스로 지우게 두지 않는다.
    - 압축 해제 및 원격 파일명 처리 시 경로 탈출(`..`, `/`, `\`, `\0`)과 로컬 심볼릭 링크 덮어쓰기 공격을 차단한다.
+
+5. **명령·단축키·문구**
+   - 새 명령은 `commands.py`의 표에 추가하고 `MainWindow.__init__`의 `handlers`에 연결한다. `QShortcut`을 직접 만들지 않는다 (설정의 단축키 재정의와 메뉴가 표를 기준으로 동작).
+   - macOS에서 Qt의 `Ctrl`은 Command 키다. `Cmd+Q`/`Cmd+M`/`Cmd+H`처럼 시스템이 쓰는 조합을 기본값으로 주지 않는다 (`test_default_shortcuts_are_unique_and_parse`가 검사).
+   - 사용자에게 보이는 UI 문구는 한국어로 쓴다. UI 비의존 모듈의 예외 메시지는 영어 그대로 둔다.
+   - 사용자 도구는 셸을 거치지 않고 인자 단위로 치환한다(`shell.tool_argv`). 셸 실행은 사용자가 명령줄에 직접 입력한 문자열에만 쓴다.
 
 ## 작업 및 커밋 규칙
 - **세션 시작/종료 시 `TASKS.md` 동기화 필수**: `/exit`로 나갔다가 다시 들어와도 즉시 맥락을 이어받을 수 있도록, 모든 작업을 마칠 때마다 `TASKS.md`에 작업 내용·최신 상태·커밋/릴리스 정보를 저장하고 같은 커밋에 포함한다.

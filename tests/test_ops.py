@@ -93,3 +93,56 @@ def test_dir_size_and_format(tree, tmp_path):
     assert ops.format_size(512) == "512 B"
     assert ops.format_size(1536) == "1.5 KB"
     assert ops.format_size(1024 * 1024) == "1.0 MB"
+
+
+def test_same_file_is_never_overwritten(tree):
+    src, _dst = tree
+    with pytest.raises(ValueError):
+        ops.copy([src / "a.txt"], src, overwrite=True)
+    assert (src / "a.txt").read_text() == "a"
+
+
+def test_conflict_policy_skip_rename_overwrite(tree):
+    src, dst = tree
+    (dst / "a.txt").write_text("old")
+    (dst / "d").mkdir()
+    ops.copy([src / "a.txt"], dst, on_conflict=lambda s, d: "skip")
+    assert (dst / "a.txt").read_text() == "old"
+    ops.copy([src / "a.txt", src / "d"], dst, on_conflict=lambda s, d: "rename")
+    assert (dst / "a.txt").read_text() == "old"
+    assert (dst / "a (2).txt").read_text() == "a"
+    assert (dst / "d (2)" / "b.txt").read_text() == "b"
+    ops.copy([src / "a.txt"], dst, on_conflict=lambda s, d: "rename")
+    assert (dst / "a (3).txt").exists()
+    ops.move([src / "a.txt"], dst, on_conflict=lambda s, d: "overwrite")
+    assert (dst / "a.txt").read_text() == "a" and not (src / "a.txt").exists()
+
+
+def test_on_error_continues_with_remaining_items(tree):
+    src, dst = tree
+    errors, seen = [], []
+    ops.copy([src / "missing.txt", src / "a.txt"], dst, progress=seen.append,
+             on_error=lambda p, e: errors.append((p.name, type(e).__name__)))
+    assert errors == [("missing.txt", "FileNotFoundError")]
+    assert (dst / "a.txt").exists() and len(seen) == 2
+    errors.clear()
+    ops.delete([src / "missing.txt", src / "a.txt"], on_error=lambda p, e: errors.append(p.name))
+    assert errors == ["missing.txt"] and not (src / "a.txt").exists()
+    with pytest.raises(FileNotFoundError):
+        ops.delete([src / "missing.txt"])
+
+
+def test_trash_uses_trasher_and_reports_failures(tree):
+    src, _dst = tree
+    sent, errors = [], []
+
+    def trasher(p):
+        sent.append(p.name)
+        return p.name != "d"
+
+    ops.trash([src / "a.txt", src / "d", src / "nope"], trasher=trasher,
+              on_error=lambda p, e: errors.append(p.name))
+    assert sent == ["a.txt", "d"] and errors == ["d", "nope"]
+    assert (src / "a.txt").exists()  # the fake trasher moves nothing
+    with pytest.raises(OSError):
+        ops.trash([src / "d"], trasher=lambda p: False)

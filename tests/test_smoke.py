@@ -47,7 +47,7 @@ def _wait(cond, timeout_ms=3000):
 
 
 def _idle(win):
-    _wait(lambda: win._worker is None)
+    _wait(lambda: not win.busy())
 
 
 def _setup(tmp_path, monkeypatch):
@@ -60,6 +60,8 @@ def _setup(tmp_path, monkeypatch):
     (a / "f.txt").write_text("x")
     monkeypatch.setattr(QMessageBox, "question", lambda *_: QMessageBox.Yes)
     monkeypatch.setattr(QMessageBox, "critical", lambda *_: None)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *_: None)
+    monkeypatch.setattr(MainWindow, "_ask_conflict", lambda *_: ("overwrite", True))
     monkeypatch.setattr(QInputDialog, "getText", lambda *_: ("newdir", True))
     win = MainWindow()
     win.show()
@@ -148,7 +150,7 @@ def test_keyboard_navigation(tmp_path):
 
     # Background DirSizeWorker automatically populates folder size without pressing Space
     _wait(lambda: panel.model.index(row("sub").row(), 1, panel.view.rootIndex()).data() == "4 B")
-    assert "0 / 2 selected (0 B / 5 B)" == panel.status_bar.text()
+    assert "0 / 2개 선택 (0 B / 5 B)" == panel.status_bar.text()
 
     panel.view.setCurrentIndex(row("sub"))
     QTest.keyClick(panel.view, Qt.Key_Return)
@@ -162,11 +164,11 @@ def test_keyboard_navigation(tmp_path):
     panel.view.clearSelection()  # setCurrentIndex selects the row itself
     QTest.keyClick(panel.view, Qt.Key_Space)
     assert [p.name for p in panel.selected_paths()] == ["x.txt"]
-    assert "1 / 2 selected (1 B / 5 B)" == panel.status_bar.text()
+    assert "1 / 2개 선택 (1 B / 5 B)" == panel.status_bar.text()
     panel.view.setCurrentIndex(row("x.txt"))
     QTest.keyClick(panel.view, Qt.Key_Space)
     assert panel.selected_paths() == []
-    assert "0 / 2 selected (0 B / 5 B)" == panel.status_bar.text()
+    assert "0 / 2개 선택 (0 B / 5 B)" == panel.status_bar.text()
     app.processEvents()
 
 
@@ -226,15 +228,23 @@ def test_search_dialog_navigates(tmp_path, monkeypatch):
     (b / "deep").mkdir()
     (b / "deep" / "target.log").write_text("x")
     win.panels[0].set_path(str(tmp_path))
-    monkeypatch.setattr(QInputDialog, "getText", lambda *_: ("target", True))
+    (b / "deep" / "other.log").write_text("the needle is here")
+    answers = iter([("target", True), ("", True), ("*.log", True), ("NEEDLE", True)])
+    monkeypatch.setattr(QInputDialog, "getText", lambda *_: next(answers))
+    expected = ["target.log"]
 
     def fake_exec(self):
         _wait(lambda: self.results.count() == 1 and self.worker.isFinished())
-        assert self.results.item(0).text() == str(b / "deep" / "target.log")
+        assert self.results.item(0).text() == str(b / "deep" / expected[0])
         self._choose(self.results.item(0))
 
     monkeypatch.setattr(SearchDialog, "exec", fake_exec)
-    win.search()
+    win.search()  # by name only
+    assert win.panels[0].current_path() == str(b / "deep")
+
+    win.panels[0].set_path(str(tmp_path))
+    expected[0] = "other.log"
+    win.search()  # name mask + containing text (case-insensitive)
     assert win.panels[0].current_path() == str(b / "deep")
 
 

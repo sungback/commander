@@ -120,3 +120,80 @@ def test_corrupt_archive(tmp_path):
     p.write_bytes(b"not a zip")
     with pytest.raises(ValueError):
         archive.read_entries(p)
+
+
+def _pack_tree(tmp_path):
+    src = tmp_path / "src"
+    (src / "d" / "empty").mkdir(parents=True)
+    (src / "a.txt").write_text("alpha")
+    (src / "d" / "b.bin").write_bytes(b"\0" * 5000)
+    (src / "d" / "한글.txt").write_text("가나다", encoding="utf-8")
+    return src
+
+
+@pytest.mark.parametrize("name", ["out.zip", "out.tar", "out.tar.gz", "out.tbz2", "out.tar.xz"])
+def test_create_roundtrip(tmp_path, name):
+    from commander.transfer import Stats
+
+    src = _pack_tree(tmp_path)
+    dst = tmp_path / name
+    stats = Stats()
+    archive.create(dst, [src / "a.txt", src / "d"], stats=stats)
+    assert (stats.total_bytes, stats.done_bytes, stats.done_items) == (5014, 5014, 3)
+    entries = {e.path: e.is_dir for e in archive.read_entries(dst)}
+    assert entries == {"a.txt": False, "d": True, "d/empty": True, "d/b.bin": False,
+                       "d/한글.txt": False}
+    out = tmp_path / "out"
+    out.mkdir()
+    archive.extract(dst, ["a.txt", "d"], out)
+    assert (out / "a.txt").read_text() == "alpha"
+    assert (out / "d" / "b.bin").read_bytes() == b"\0" * 5000
+    assert (out / "d" / "한글.txt").read_text(encoding="utf-8") == "가나다"
+    assert (out / "d" / "empty").is_dir()
+    assert [p.name for p in tmp_path.iterdir() if "commander-part" in p.name] == []
+
+
+def test_create_refuses_bad_targets(tmp_path):
+    src = _pack_tree(tmp_path)
+    with pytest.raises(ValueError):
+        archive.create(tmp_path / "out.rar", [src])
+    with pytest.raises(ValueError):
+        archive.create(src / "d" / "self.zip", [src / "d"])  # would contain itself
+    (tmp_path / "taken.zip").write_text("precious")
+    with pytest.raises(FileExistsError):
+        archive.create(tmp_path / "taken.zip", [src])
+    assert (tmp_path / "taken.zip").read_text() == "precious"
+    archive.create(tmp_path / "taken.zip", [src], overwrite=True)
+    assert archive.is_archive(tmp_path / "taken.zip") and archive.read_entries(tmp_path / "taken.zip")
+
+
+def test_create_cancel_and_errors_leave_no_partial_archive(tmp_path):
+    from commander.transfer import Cancelled, Control
+
+    src = _pack_tree(tmp_path)
+    (tmp_path / "keep.zip").write_text("precious")
+    control = Control()
+    control.cancel()
+    with pytest.raises(Cancelled):
+        archive.create(tmp_path / "keep.zip", [src], overwrite=True, control=control)
+    assert (tmp_path / "keep.zip").read_text() == "precious"  # replaced only on success
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["keep.zip", "src"]
+
+    errors = []
+    archive.create(tmp_path / "partial.zip", [src / "a.txt", src / "gone.txt", src / "d"],
+                   on_error=lambda p, e: errors.append(p.name))
+    assert errors == []  # a vanished top-level item is simply not there to pack
+    assert "a.txt" in {e.path for e in archive.read_entries(tmp_path / "partial.zip")}
+
+
+@pytest.mark.skipif(not hasattr(__import__("os"), "symlink") or __import__("sys").platform == "win32",
+                    reason="needs POSIX symlinks")
+def test_create_skips_symlinks(tmp_path):
+    src = _pack_tree(tmp_path)
+    secret = tmp_path / "secret.txt"
+    secret.write_text("outside")
+    (src / "d" / "link.txt").symlink_to(secret)
+    (src / "d" / "linkdir").symlink_to(tmp_path)
+    archive.create(tmp_path / "o.zip", [src])
+    names = {e.path for e in archive.read_entries(tmp_path / "o.zip")}
+    assert "src/d/b.bin" in names and not any("link" in n for n in names)

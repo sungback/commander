@@ -1,13 +1,16 @@
 """Background execution of ops functions with progress and cancel."""
 import atexit
+import shutil
 import subprocess
+import threading
 import zipfile
 from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
-from . import ops, search, updater
+from . import ops, search, transfer, updater
 
 Task = Callable[[Callable[[Path], None]], None]
 
@@ -44,15 +47,95 @@ class Worker(QThread):
             self.failed.emit(f"{type(e).__name__}: {e}")
 
 
+class Job(QThread):
+    """A queued background operation: progress is polled from `stats`, never signalled.
+
+    `run_fn(job)` does the work on this thread and uses the job as its callbacks:
+    `on_item` (per-item progress), `on_error` (collect and continue) and `ask` (conflict
+    question answered by the UI thread through `answer`).
+    """
+
+    conflict = Signal(object, str, str)  # job, source path, destination path
+
+    def __init__(self, title: str, run_fn: Callable[["Job"], None], total_items: int = 0,
+                 parent=None):
+        super().__init__(parent)
+        self.title = title
+        self.stats = transfer.Stats(total_items=total_items)
+        self.control = transfer.Control()
+        self.errors: list[str] = []
+        self.waiting = False  # blocked on a conflict question
+        self.result = None  # whatever run_fn returns, for the UI's completion callback
+        self._run_fn = run_fn
+        self._answered = threading.Event()
+        self._choice = ""
+        self._sticky = ""
+        _size_workers.add(self)
+        self.finished.connect(lambda: _size_workers.discard(self))
+
+    @property
+    def cancelled(self) -> bool:
+        return self.control.cancelled
+
+    def pause(self) -> None:
+        self.control.pause()
+
+    def resume(self) -> None:
+        self.control.resume()
+
+    def cancel(self) -> None:
+        self.control.cancel()
+        self._answered.set()
+
+    def on_item(self, path: Path) -> None:
+        self.stats.done_items += 1
+        self.stats.current = Path(path).name
+        self.control.checkpoint()
+
+    def on_error(self, path: Path, e: Exception) -> None:
+        self.errors.append(f"{Path(path).name}: {type(e).__name__}: {e}")
+
+    def ask(self, src: Path, dst: Path) -> str:
+        """Called on the worker thread; blocks until the UI answers (or the job is cancelled)."""
+        if self._sticky:
+            return self._sticky
+        self._answered.clear()
+        self.waiting = True
+        self.conflict.emit(self, str(src), str(dst))
+        self._answered.wait()
+        self.waiting = False
+        self.control.checkpoint()
+        return self._choice
+
+    def answer(self, choice: str | None, apply_all: bool = False) -> None:
+        """UI-thread reply to `conflict`; None cancels the whole job."""
+        if choice is None:
+            self.cancel()
+            return
+        self._choice = choice
+        if apply_all:
+            self._sticky = choice
+        self._answered.set()
+
+    def run(self) -> None:
+        try:
+            self.result = self._run_fn(self)
+        except (Cancelled, transfer.Cancelled):
+            pass
+        except (OSError, ValueError, shutil.Error) as e:
+            self.errors.append(f"{type(e).__name__}: {e}")
+
+
 class SearchWorker(QThread):
     found = Signal(str)
 
     LIMIT = 5000
 
-    def __init__(self, root: Path, pattern: str, parent=None):
+    def __init__(self, root: Path, pattern: str, parent=None, text: str = ""):
         super().__init__(parent)
         self._root = root
         self._pattern = pattern
+        self._text = text
         self._cancel = False
         self.truncated = False
 
@@ -61,7 +144,8 @@ class SearchWorker(QThread):
 
     def run(self) -> None:
         count = 0
-        for path in search.find(self._root, self._pattern, lambda: self._cancel, self.LIMIT):
+        for path in search.find(self._root, self._pattern, lambda: self._cancel, self.LIMIT,
+                                text=self._text):
             self.found.emit(str(path))
             count += 1
         self.truncated = count >= self.LIMIT
@@ -87,8 +171,9 @@ class DirSizeWorker(QThread):
     @classmethod
     def stop_all(cls) -> None:
         for w in list(_size_workers):
-            w.cancel()
-            w.wait(2000)
+            with suppress(RuntimeError):  # the C++ thread object may already be gone
+                w.cancel()
+                w.wait(2000)
         _size_workers.clear()
 
     def cancel(self) -> None:
