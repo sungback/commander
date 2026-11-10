@@ -1,5 +1,6 @@
 import os
 import posixpath
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFileSystemModel,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -33,6 +35,15 @@ def list_drives() -> list[str]:
     """Available root drives (e.g. ['C:\\', 'D:\\'] on Windows, ['/'] on POSIX)."""
     drives = [os.path.normpath(fi.absoluteFilePath()) for fi in QDir.drives()]
     return drives or [os.path.sep]
+
+
+def name_matches(name: str, pattern: str) -> bool:
+    """Case-insensitive match against ';'-separated masks; a mask without wildcards is a substring."""
+    masks = [m.strip().lower() for m in pattern.split(";") if m.strip()]
+    if not masks:
+        return True
+    low = name.lower()
+    return any(fnmatchcase(low, m) if any(c in m for c in "*?[") else m in low for m in masks)
 
 
 class _LocalModel(QFileSystemModel):
@@ -72,6 +83,7 @@ class _SortProxy(QSortFilterProxyModel):
         super().__init__(parent)
         self._src = src
         self.show_hidden = show_hidden
+        self.name_filter = ""
         self._root_src = QModelIndex()
         self.setSourceModel(src)
         self.setDynamicSortFilter(True)
@@ -96,6 +108,12 @@ class _SortProxy(QSortFilterProxyModel):
         self.show_hidden = show
         self._refresh_filter()
 
+    def set_name_filter(self, pattern: str) -> None:
+        if self.name_filter == pattern:
+            return
+        self.name_filter = pattern
+        self._refresh_filter()
+
     def setRootPath(self, path: str) -> QModelIndex:
         self._root_src = self._src.setRootPath(path)
         if not self._root_src.isValid():
@@ -104,13 +122,15 @@ class _SortProxy(QSortFilterProxyModel):
         return self.mapFromSource(self._root_src)
 
     def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:
-        if self.show_hidden or not self._root_src.isValid() or source_parent != self._root_src:
+        if not self._root_src.isValid() or source_parent != self._root_src:
             return True
         idx = self._src.index(source_row, 0, source_parent)
         name = self._src.fileName(idx)
         if name == "..":
             return True
-        return not name.startswith(".") and not self._src.fileInfo(idx).isHidden()
+        if not self.show_hidden and (name.startswith(".") or self._src.fileInfo(idx).isHidden()):
+            return False
+        return name_matches(name, self.name_filter)
 
     def index(self, row_or_path, column: int = 0, parent: QModelIndex | None = None) -> QModelIndex:
         if isinstance(row_or_path, str):
@@ -156,6 +176,28 @@ class _SortProxy(QSortFilterProxyModel):
         return l_name.lower() < r_name.lower()
 
 
+_SELECT_KEYS = (Qt.Key_Plus, Qt.Key_Minus, Qt.Key_Asterisk)
+
+
+class _FilterEdit(QLineEdit):
+    """Quick filter box: Esc clears and closes, Enter/Down returns to the file list."""
+
+    def __init__(self, tab: "_Tab"):
+        super().__init__()
+        self._tab = tab
+        self.setPlaceholderText("Filter (text or *.ext;*.md) — Esc to clear")
+        self.setClearButtonEnabled(True)
+        self.hide()
+
+    def keyPressEvent(self, e) -> None:
+        if e.key() == Qt.Key_Escape:
+            self._tab.clear_filter()
+        elif e.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Down):
+            self._tab.view.setFocus()
+        else:
+            super().keyPressEvent(e)
+
+
 class _View(QTreeView):
     """Tree view with Total Commander style keys: Enter/Backspace/Space/Insert."""
 
@@ -170,6 +212,13 @@ class _View(QTreeView):
             self._tab._open(cur)
         elif key == Qt.Key_Backspace:
             self._tab.go_up()
+        elif key == Qt.Key_Escape and self._tab.filter_text:
+            self._tab.clear_filter()
+        elif key in _SELECT_KEYS and not e.modifiers() & (Qt.ControlModifier | Qt.AltModifier):
+            if key == Qt.Key_Asterisk:
+                self._tab.invert_selection()
+            else:
+                self._tab.prompt_select(select=key == Qt.Key_Plus)
         elif key in (Qt.Key_Space, Qt.Key_Insert) and cur.isValid():
             self.selectionModel().select(
                 cur, QItemSelectionModel.Toggle | QItemSelectionModel.Rows)
@@ -206,6 +255,11 @@ class _Tab(QWidget):
         self._size_worker: DirSizeWorker | None = None
         self._pending_cur: str | None = None
         self._pending_sel: set[str] = set()
+        self._history: list[str] = [path]
+        self._hist_pos = 0
+        self.filter_text = ""
+        self.filter_bar = _FilterEdit(self)
+        self.filter_bar.textChanged.connect(self.set_filter)
         self._sync_drive_box()
 
         self.view = _View(self)
@@ -236,6 +290,7 @@ class _Tab(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(top_bar)
         layout.addWidget(self.view)
+        layout.addWidget(self.filter_bar)
         layout.addWidget(self.status_bar)
 
     def _sync_drive_box(self) -> None:
@@ -287,7 +342,60 @@ class _Tab(QWidget):
         self.set_show_hidden(not self.show_hidden)
         return self.show_hidden
 
-    def set_path(self, path: str) -> None:
+    def show_filter(self) -> None:
+        self.filter_bar.show()
+        self.filter_bar.setFocus()
+        self.filter_bar.selectAll()
+
+    def set_filter(self, pattern: str) -> None:
+        """Show only entries matching `pattern` ('..' always stays) in any of the three modes."""
+        if pattern == self.filter_text:
+            return
+        self.filter_text = pattern
+        if self.filter_bar.text() != pattern:
+            with QSignalBlocker(self.filter_bar):
+                self.filter_bar.setText(pattern)
+        if pattern:
+            self.filter_bar.show()
+        self.model.set_name_filter(pattern)
+        if (self.in_archive or self.in_remote) and self._raw_rows is not None:
+            self._show_rows(*self._raw_rows)
+        else:
+            self.update_status()
+
+    def clear_filter(self) -> None:
+        self.set_filter("")
+        self.filter_bar.hide()
+        self.view.setFocus()
+
+    def _reset_filter(self) -> None:
+        """Drop the filter without re-rendering; used right before showing another folder."""
+        self.filter_text = ""
+        with QSignalBlocker(self.filter_bar):
+            self.filter_bar.clear()
+        self.filter_bar.hide()
+        self.model.set_name_filter("")
+
+    def _record_history(self, path: str) -> None:
+        if self._history[self._hist_pos] == path:
+            return
+        del self._history[self._hist_pos + 1:]
+        self._history.append(path)
+        del self._history[:-50]
+        self._hist_pos = len(self._history) - 1
+
+    def go_history(self, step: int) -> bool:
+        """Move back (-1) / forward (+1) through visited local folders, skipping vanished ones."""
+        pos = self._hist_pos + step
+        while 0 <= pos < len(self._history):
+            if Path(self._history[pos]).is_dir():
+                self._hist_pos = pos
+                self.set_path(self._history[pos], record=False)
+                return True
+            pos += step
+        return False
+
+    def set_path(self, path: str, record: bool = True) -> None:
         p = Path(path)
         if archive.is_archive(p):
             try:
@@ -304,8 +412,11 @@ class _Tab(QWidget):
             self._pending_cur = None
             self._pending_sel.clear()
             self._leave_archive()
+            self._reset_filter()
             self.view.setRootIndex(idx)
             self.local_dir = self.model.filePath(idx)
+            if record:
+                self._record_history(self.local_dir)
             self.path_bar.setText(self.local_dir)
             self._sync_drive_box()
             self._scan_dir_sizes()
@@ -318,6 +429,8 @@ class _Tab(QWidget):
             self._entries = archive.read_entries(path)  # raises before any state changes
             self._leave_archive()
             self.archive = path
+        if self._raw_rows is None or inner != self.inner:
+            self._reset_filter()
         self.inner = inner
         rows = [(e.path.rsplit("/", 1)[-1], e.is_dir, e.size)
                 for e in archive.children(self._entries, inner)]
@@ -328,6 +441,8 @@ class _Tab(QWidget):
         if self.remote is not client:
             self._leave_archive()
             self.remote = client
+        if self._raw_rows is None or path != self.remote_path:
+            self._reset_filter()
         self.remote_path = path
         rows = [(e.name, e.is_dir, e.size) for e in entries]
         self._show_rows(rows, f"{client.scheme}://{client.host}:{client.port}{path}", f"{client.host}{path}")
@@ -336,7 +451,8 @@ class _Tab(QWidget):
                    show_dir_size: bool = False) -> None:
         self._stop_size_worker()
         self._raw_rows = (rows, bar, title, show_dir_size)
-        visible = [r for r in rows if self.show_hidden or not r[0].startswith(".")]
+        visible = [r for r in rows if (self.show_hidden or not r[0].startswith("."))
+                   and name_matches(r[0], self.filter_text)]
         m = self.arch_model
         m.clear()
         m.setHorizontalHeaderLabels(["Name", "Size"])
@@ -499,6 +615,33 @@ class _Tab(QWidget):
             f"({ops.format_size(sel_bytes)} / {ops.format_size(total_bytes)})"
         )
 
+    def _name_rows(self) -> list[QModelIndex]:
+        """Column-0 indexes of every listed entry except '..' (works in all three modes)."""
+        m = self.view.model()
+        root = self.view.rootIndex() if m is self.model else QModelIndex()
+        rows = (m.index(r, 0, root) for r in range(m.rowCount(root)))
+        return [i for i in rows if i.data() != ".."]
+
+    def select_pattern(self, pattern: str, select: bool = True) -> int:
+        """Select (or deselect) entries matching the masks; returns how many matched."""
+        flag = QItemSelectionModel.Select if select else QItemSelectionModel.Deselect
+        hits = [i for i in self._name_rows() if name_matches(i.data(), pattern)]
+        for i in hits:
+            self.view.selectionModel().select(i, flag | QItemSelectionModel.Rows)
+        return len(hits)
+
+    def invert_selection(self) -> None:
+        for i in self._name_rows():
+            self.view.selectionModel().select(
+                i, QItemSelectionModel.Toggle | QItemSelectionModel.Rows)
+
+    def prompt_select(self, select: bool = True) -> None:
+        title = "Select" if select else "Deselect"
+        pattern, ok = QInputDialog.getText(
+            self, title, "Mask (e.g. *.txt;*.md, or part of a name):", QLineEdit.Normal, "*")
+        if ok and pattern.strip():
+            self.select_pattern(pattern, select)
+
     def go_up(self) -> None:
         if self.remote is not None:
             if self.remote_path != "/":
@@ -648,6 +791,31 @@ class FilePanel(QWidget):
 
     def set_path(self, path: str) -> None:
         self._tab.set_path(path)
+
+    def go_back(self) -> bool:
+        return self._tab.go_history(-1)
+
+    def go_forward(self) -> bool:
+        return self._tab.go_history(1)
+
+    @property
+    def filter_text(self) -> str:
+        return self._tab.filter_text
+
+    def show_filter(self) -> None:
+        self._tab.show_filter()
+
+    def set_filter(self, pattern: str) -> None:
+        self._tab.set_filter(pattern)
+
+    def clear_filter(self) -> None:
+        self._tab.clear_filter()
+
+    def select_pattern(self, pattern: str, select: bool = True) -> int:
+        return self._tab.select_pattern(pattern, select)
+
+    def invert_selection(self) -> None:
+        self._tab.invert_selection()
 
     @property
     def show_hidden(self) -> bool:

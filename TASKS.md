@@ -24,8 +24,11 @@
 - [x] 휴지통 삭제: `F8`/`Del`/`Ctrl+Backspace`는 휴지통(`ops.trash`, `QFile.moveToTrash`), `Shift+F8`/`Shift+Del`은 영구 삭제
 - [x] 충돌 대화상자: 이미 있는 항목마다 Overwrite / Skip / Keep both(로컬만, `이름 (2).ext`) / Cancel + "Apply to all" (`MainWindow._resolve_conflicts`, `ops` `on_conflict`)
 - [x] 오류 시 계속 진행: 로컬 복사/이동/삭제는 실패 항목을 건너뛰고 끝에 요약 표시 (`ops` `on_error`)
-- [ ] 빠른 필터 (`Ctrl+S`), 뒤로/앞으로 히스토리 (`Alt+←`/`Alt+→`), 폴더 즐겨찾기 (`Ctrl+D`)
-- [ ] 패턴 선택 (`+` 선택 / `-` 해제 / `*` 반전)
+- [x] 빠른 필터 (`Ctrl+S`, `Esc`로 해제): 텍스트 부분 일치 또는 `;` 구분 글롭, 3모드 공통(`name_matches`, 로컬은 `_SortProxy.name_filter`, 압축/원격은 `_show_rows`), 폴더 이동 시 자동 해제
+- [x] 뒤로/앞으로 히스토리 (`Alt+←`/`Alt+→`, `Ctrl+[`/`Ctrl+]`): 탭별 로컬 폴더 50개, 사라진 폴더는 건너뜀
+- [x] 폴더 즐겨찾기 (`Ctrl+D` 메뉴에서 이동·추가·제거, `state.json`의 `favorites`에 즉시 저장)
+- [x] 패턴 선택 (`+` 선택 / `-` 해제 / `*` 반전, 3모드 공통, `..` 제외)
+- [x] 활성 패널 추적을 `focusChanged` 기반으로 변경 (경로창·필터창에 포커스가 있어도 해당 패널이 활성)
 - [ ] 우클릭 메뉴 (열기·경로 복사·Finder/탐색기에서 보기·터미널 열기), Enter로 파일을 기본 앱에서 열기
 - [ ] 패널 간 / 외부 앱과의 드래그 앤 드롭
 

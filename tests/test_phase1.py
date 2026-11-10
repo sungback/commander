@@ -1,4 +1,6 @@
 """Offscreen UI tests for everyday-operation features (trash, conflicts, error summary)."""
+from pathlib import Path
+
 from PySide6.QtWidgets import QMessageBox
 from test_smoke import _idle, _names, _select_file, _setup, _wait
 
@@ -138,3 +140,151 @@ def test_conflict_dialog_buttons(tmp_path, monkeypatch):
     assert "Keep both" not in seen[-1]
     press("Cancel", False)
     assert win._ask_conflict("f.txt", 0, False) is None
+
+
+def _view_rows(panel):
+    m = panel.view.model()
+    root = panel.view.rootIndex()
+    return [m.index(r, 0, root).data() for r in range(m.rowCount(root))]
+
+
+def _nav_tree(tmp_path):
+    import zipfile
+
+    d = tmp_path / "nav"
+    (d / "docs").mkdir(parents=True)
+    for name in ("a.txt", "b.txt", "c.md"):
+        (d / name).write_text(name)
+    with zipfile.ZipFile(d / "z.zip", "w") as z:
+        for name in ("one.txt", "two.md", "sub/x.txt"):
+            z.writestr(name, "1")
+    return d
+
+
+def test_quick_filter_in_local_and_archive(tmp_path):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    d = _nav_tree(tmp_path)
+    p = MainWindow().panels[0]
+    p.set_path(str(d))
+    _wait(lambda: len(_view_rows(p)) == 6)
+
+    p.set_filter("*.txt")
+    assert _view_rows(p) == ["..", "a.txt", "b.txt"]
+    assert p.status_bar.text().startswith("0 / 2 selected")
+    p.view.sortByColumn(0, Qt.DescendingOrder)
+    assert _view_rows(p) == ["..", "b.txt", "a.txt"]
+    p.view.sortByColumn(0, Qt.AscendingOrder)
+    p.set_filter("DOC;.md")  # masks without wildcards are case-insensitive substrings
+    assert _view_rows(p) == ["..", "docs", "c.md"]
+    QTest.keyClick(p.view, Qt.Key_Escape)
+    assert p.filter_text == "" and len(_view_rows(p)) == 6
+
+    p.set_filter("docs")
+    p.set_path(str(d / "docs"))  # navigating drops the filter
+    assert p.filter_text == ""
+    p.set_path(str(d))
+    _wait(lambda: len(_view_rows(p)) == 6)
+
+    p.set_path(str(d / "z.zip"))
+    assert _view_rows(p) == ["..", "sub", "one.txt", "two.md"]
+    p.set_filter("*.md")
+    assert _view_rows(p) == ["..", "two.md"]
+    p._tab.filter_bar.setText("sub")  # typing in the filter box
+    assert _view_rows(p) == ["..", "sub"]
+    p.view.setCurrentIndex(p.view.model().index(1, 0))
+    QTest.keyClick(p.view, Qt.Key_Return)
+    assert p.filter_text == "" and _view_rows(p) == ["..", "x.txt"]
+
+
+def test_history_back_and_forward(tmp_path):
+    import shutil
+
+    d = _nav_tree(tmp_path)
+    other = tmp_path / "other"
+    other.mkdir()
+    p = MainWindow().panels[0]
+    for path in (d, d / "docs", other):
+        p.set_path(str(path))
+    assert p.go_back() and p.current_path() == str(d / "docs")
+    assert p.go_back() and p.current_path() == str(d)
+    assert p.go_forward() and p.current_path() == str(d / "docs")
+    p.set_path(str(d / "z.zip"))  # archives are left by going back to a local folder
+    assert p.in_archive
+    assert p.go_back() and not p.in_archive and p.current_path() == str(d)
+    p.set_path(str(other))  # a new visit truncates the forward history
+    assert not p.go_forward()
+    shutil.rmtree(d)  # vanished folders are skipped: back lands on the initial (home) folder
+    assert p.go_back() and Path(p.current_path()) == Path.home()
+    assert not p.go_back()
+    assert p.go_forward() and p.current_path() == str(other)
+
+
+def test_favorites_menu_and_persistence(tmp_path, monkeypatch):
+    d = _nav_tree(tmp_path)
+    state = tmp_path / "state.json"
+    win = MainWindow(state_file=state)
+    win.active_index = lambda: 0
+    win.panels[0].set_path(str(d))
+    labels = [a.text() for a in win._favorites_menu().actions()]
+    assert labels == ["현재 폴더를 즐겨찾기에 추가"]
+    win._favorites_menu().actions()[0].trigger()
+    win.add_favorite(str(d))  # duplicates are ignored
+    assert win.favorites == [str(d)]
+
+    win.panels[0].set_path(str(d / "docs"))
+    win2 = MainWindow(state_file=state)  # favorites are saved as soon as they change
+    assert win2.favorites == [str(d)]
+    menu = win._favorites_menu()
+    menu.actions()[0].trigger()
+    assert win.panels[0].current_path() == str(d)
+    assert win._favorites_menu().actions()[-1].text() == "현재 폴더를 즐겨찾기에서 제거"
+    win._favorites_menu().actions()[-1].trigger()
+    assert win.favorites == []
+
+    win.panels[0].set_path(str(d / "z.zip"))  # only local folders can be added
+    assert not win._favorites_menu().actions()[-1].isEnabled()
+
+
+def test_select_by_pattern_and_invert(tmp_path, monkeypatch):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QInputDialog
+
+    d = _nav_tree(tmp_path)
+    p = MainWindow().panels[0]
+    p.set_path(str(d))
+    _wait(lambda: len(_view_rows(p)) == 6)
+
+    def selected():
+        return sorted(i.data() for i in p.view.selectionModel().selectedRows(0))
+
+    p.view.clearSelection()
+    monkeypatch.setattr(QInputDialog, "getText", lambda *_: ("*.txt", True))
+    QTest.keyClick(p.view, Qt.Key_Plus)
+    assert selected() == ["a.txt", "b.txt"]
+    QTest.keyClick(p.view, Qt.Key_Asterisk)  # invert never touches '..'
+    assert selected() == ["c.md", "docs", "z.zip"]
+    monkeypatch.setattr(QInputDialog, "getText", lambda *_: ("z", True))
+    QTest.keyClick(p.view, Qt.Key_Minus)
+    assert selected() == ["c.md", "docs"]
+    assert sorted(x.name for x in p.selected_paths()) == selected()
+
+    p.set_path(str(d / "z.zip"))
+    assert p.select_pattern("*.txt;sub") == 2
+    assert sorted(p.archive_selection()) == ["one.txt", "sub"]
+    p.invert_selection()
+    assert p.archive_selection() == ["two.md"]
+
+
+def test_active_panel_follows_focus(tmp_path, monkeypatch):
+    _app, win, _a, _b = _setup(tmp_path, monkeypatch)
+    win._on_focus_changed(None, win.panels[1].view)
+    assert win.active_index() == 1
+    win._on_focus_changed(None, win.panels[1]._tab.filter_bar)  # filter box keeps its panel active
+    assert win.active_index() == 1
+    win._on_focus_changed(None, win.panels[0].path_bar)
+    assert win.active_index() == 0
+    win._on_focus_changed(None, None)
+    assert win.active_index() == 0

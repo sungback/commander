@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressDialog,
     QPushButton,
@@ -53,6 +54,8 @@ class MainWindow(QMainWindow):
         self._worker: Worker | None = None
         self._update_worker: UpdateCheckWorker | UpdateDownloadWorker | None = None
         self._state_file = state_file
+        self._active = 0
+        self.favorites: list[str] = []
         home = str(Path.home())
         self.panels = [FilePanel(home), FilePanel(home)]
         self.splitter = QSplitter()
@@ -100,6 +103,12 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+F"), self, activated=self.search)
         QShortcut(QKeySequence("Ctrl+N"), self, activated=self.connect_ftp)
         QShortcut(QKeySequence("Ctrl+H"), self, activated=self.toggle_hidden)
+        QShortcut(QKeySequence("Ctrl+S"), self, activated=lambda: self.panels[self.active_index()].show_filter())
+        QShortcut(QKeySequence("Ctrl+D"), self, activated=self.show_favorites)
+        for seq in ("Alt+Left", "Ctrl+["):
+            QShortcut(QKeySequence(seq), self, activated=lambda: self.panels[self.active_index()].go_back())
+        for seq in ("Alt+Right", "Ctrl+]"):
+            QShortcut(QKeySequence(seq), self, activated=lambda: self.panels[self.active_index()].go_forward())
         QShortcut(QKeySequence("Ctrl+."), self, activated=self.toggle_hidden)
         QShortcut(QKeySequence("F2"), self, activated=self.batch_rename)
         QShortcut(QKeySequence("F3"), self, activated=lambda: self.open_file(edit=False))
@@ -112,6 +121,7 @@ class MainWindow(QMainWindow):
         for seq in ("Shift+F8", "Shift+Del"):
             QShortcut(QKeySequence(seq), self, activated=lambda: self.delete(permanent=True))
         self.panels[0].view.setFocus()
+        QApplication.instance().focusChanged.connect(self._on_focus_changed)
         if self._state_file is not None:
             self.load_state(self._state_file)
         if auto_check_updates:
@@ -127,6 +137,7 @@ class MainWindow(QMainWindow):
             "splitter": self.splitter.sizes(),
             "active_panel": self.active_index(),
             "panels": [p.to_state() for p in self.panels],
+            "favorites": self.favorites,
         }
         with suppress(OSError):
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -148,11 +159,15 @@ class MainWindow(QMainWindow):
             for p, ps in zip(self.panels, panels, strict=False):
                 if isinstance(ps, dict):
                     p.restore_state(ps)
+            favs = data.get("favorites")
+            if isinstance(favs, list):
+                self.favorites = [f for f in favs if isinstance(f, str) and f]
             sizes = data.get("splitter")
             if isinstance(sizes, list) and len(sizes) == 2 and all(isinstance(x, int) and x > 0 for x in sizes):
                 self.splitter.setSizes(sizes)
             active = int(data.get("active_panel", 0))
             if active in (0, 1):
+                self._active = active
                 self.panels[active].view.setFocus()
 
     def closeEvent(self, event) -> None:
@@ -160,8 +175,51 @@ class MainWindow(QMainWindow):
         ops.save_size_cache()
         super().closeEvent(event)
 
+    def _on_focus_changed(self, _old, now) -> None:
+        """Remember the panel that last held focus (its list, path bar or filter box)."""
+        for i, panel in enumerate(self.panels):
+            if now is not None and panel.isAncestorOf(now):
+                self._active = i
+
     def active_index(self) -> int:
-        return 1 if self.panels[1].view.hasFocus() else 0
+        return self._active
+
+    def is_favorite(self, path: str) -> bool:
+        return any(ops.norm_key(f) == ops.norm_key(path) for f in self.favorites)
+
+    def add_favorite(self, path: str) -> None:
+        if path and not self.is_favorite(path):
+            self.favorites.append(path)
+            self.save_state()
+
+    def remove_favorite(self, path: str) -> None:
+        self.favorites = [f for f in self.favorites if ops.norm_key(f) != ops.norm_key(path)]
+        self.save_state()
+
+    def go_favorite(self, path: str) -> None:
+        if not Path(path).is_dir():
+            self._error(FileNotFoundError(path))
+            return
+        self.panels[self.active_index()].set_path(path)
+
+    def _favorites_menu(self) -> QMenu:
+        panel = self.panels[self.active_index()]
+        local = not (panel.in_archive or panel.in_remote)
+        here = panel.current_path()
+        menu = QMenu(self)
+        for fav in self.favorites:
+            menu.addAction(fav, lambda f=fav: self.go_favorite(f))
+        if self.favorites:
+            menu.addSeparator()
+        if self.is_favorite(here):
+            menu.addAction("현재 폴더를 즐겨찾기에서 제거", lambda: self.remove_favorite(here))
+        else:
+            menu.addAction("현재 폴더를 즐겨찾기에 추가", lambda: self.add_favorite(here)).setEnabled(local)
+        return menu
+
+    def show_favorites(self) -> None:
+        bar = self.panels[self.active_index()].path_bar
+        self._favorites_menu().exec(bar.mapToGlobal(bar.rect().bottomLeft()))
 
     def switch_panel(self) -> None:
         self.panels[1 - self.active_index()].view.setFocus()
