@@ -4,20 +4,18 @@
 상태: `[ ]` 대기 / `[~]` 진행 중 / `[x]` 완료
 
 ## 현재 상태 요약 (세션 복원용)
-- **버전**: `v0.2.1` (`pyproject.toml`)
+- **버전**: `v0.3.0` (`pyproject.toml`, `src/commander/__init__.py`)
 - **원격 저장소**: https://github.com/sungback/commander (`origin/main`)
 - **릴리스**:
   - `v0.1.0`: macOS 초기 릴리스 (`commander.dmg`, `commander.zip` 수동 업로드 완료)
   - `v0.2.0`: Windows 지원 + 드라이브 선택(`QComboBox`) + GitHub Actions 멀티 플랫폼(`windows-latest`, `macos-latest`) 자동 빌드·릴리스 워크플로 적용
   - `v0.2.1`: 하단 펑션키 바(F2~F8), 숨김 파일 토글(`Ctrl+H`/`Ctrl+.`), 자동 업데이트(`updater.py` / 메뉴 & 백그라운드 확인) 기능 배포
+  - `v0.3.0`: 로드맵 1~5단계(휴지통·충돌 처리, 전송 큐, 비교·동기화, 뷰어·압축 만들기·평면 보기, 설정·단축키 재정의·명령줄·다크 모드·한국어 UI). 브랜치 `claude/vigilant-davinci-dj4vyo`에서 PR 생성 후, PR의 Windows/macOS CI 통과를 확인하고 `v0.3.0` 태그 푸시 → `release.yml`이 빌드·업로드
 - **즉시 실행/검증 명령**:
   - `./scripts/check.sh` — `ruff` + `pytest` + 실제 홈 디렉터리 오프스크린 스모크/성능 체크
   - `./scripts/run.sh` — 소스 직접 실행 (`--app` 옵션 시 `/Applications/commander.app` 재빌드·설치·실행)
-- **최근 완료**: 로드맵 **1~5단계 전체** (브랜치 `claude/vigilant-davinci-dj4vyo`, 미릴리스 — 버전은 아직 `v0.2.1`). 6단계(원격 보강)는 사용자 결정으로 제외
-- **다음 예정 작업**: 없음(새 요청 대기). 권장 후속 조치:
-  1. macOS/Windows 실기기 확인 — 헤드리스 테스트로는 검증 못 한 것: 실제 마우스 드래그 앤 드롭, OS 휴지통 이동, Finder/탐색기·터미널 실행, 네이티브 다크 모드, 메뉴 막대 단축키, PyInstaller 번들에 Qt 한국어 번역(`qtbase_ko.qm`) 포함 여부
-  2. 확인 후 버전 올려 릴리스 (`v0.3.0` 제안: `pyproject.toml` + `src/commander/__init__.py`, 태그 푸시 시 `release.yml`이 빌드)
-  3. PR 생성/병합은 사용자가 요청할 때
+- **최근 완료**: 로드맵 **1~5단계 전체**, 버전 `v0.3.0`으로 올림. 6단계(원격 보강)는 사용자 결정으로 제외
+- **다음 예정 작업**: PR 병합은 사용자가 결정. 릴리스 후 실기기 확인 권장 — 헤드리스 테스트로는 검증 못 한 것: 실제 마우스 드래그 앤 드롭, OS 휴지통 이동, Finder/탐색기·터미널 실행, 네이티브 다크 모드, 메뉴 막대 단축키, 패키징된 앱의 Qt 한국어 번역(`qtbase_ko.qm`) 포함 여부
 
 ## 로드맵 (Total Commander / ForkLift 수준)
 사용자 확정: 1 → 2 → 3 → 4 → 5 순서로 끝까지 진행. **원격(FTP/SFTP) 보강(6단계)은 만들지 않는다.**
