@@ -15,11 +15,12 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python - <<'EOF'
 import time
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
+from commander import __version__
 from commander.app import MainWindow
 
 app = QApplication([])
 win = MainWindow()
-assert win.windowTitle() == "commander", f"unexpected title: {win.windowTitle()}"
+assert win.windowTitle() == f"commander v{__version__}", f"unexpected title: {win.windowTitle()}"
 assert not win.windowIcon().isNull(), "window icon is null"
 
 t0 = time.monotonic()

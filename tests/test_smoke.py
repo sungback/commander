@@ -4,6 +4,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
+from commander import __version__
 from commander.app import MainWindow
 
 
@@ -18,7 +19,7 @@ def test_window_has_two_panels(tmp_path, monkeypatch):
     win = MainWindow()
     win.panels[0].set_path(str(d1))
     assert len(win.panels) == 2
-    assert win.windowTitle() == "commander"
+    assert win.windowTitle() == f"commander v{__version__}"
     assert not win.windowIcon().isNull()
     assert win.panels[0].current_path() == str(d1)
     # Selecting another drive from the QComboBox switches the panel path

@@ -76,7 +76,7 @@ class MainWindow(QMainWindow):
         self._settings_file = settings_file
         self.settings = settings.load(settings_file)
         self.commands = default_commands()
-        self.setWindowTitle("commander")
+        self.setWindowTitle(f"commander v{__version__}")
         self.setWindowIcon(app_icon())
         self.resize(1100, 650)
         self._worker: Worker | None = None  # modal task (remote transfers)
