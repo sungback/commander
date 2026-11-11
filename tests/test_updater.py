@@ -182,7 +182,7 @@ def test_apply_update_and_restart_spawns_helper(tmp_path, monkeypatch):
     ps_text = raw.decode("utf-8-sig")
     assert ps_text.isascii()
     assert "commander.exe" in ps_text
-    assert "Rename-Item" in ps_text  # 실행 중인 exe를 rename으로 교체하는 로직 존재 확인
+    assert "Move-Item" in ps_text  # 기존 exe 및 _internal 백업 폴더로 이동 로직 확인
     assert updater.HELPER_MARKER in ps_text
     # stage_root는 staged.parent("extracted").parent("stage") 여야 함
     assert ps_file.parent == (tmp_path / "stage")
