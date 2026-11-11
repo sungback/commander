@@ -1262,8 +1262,31 @@ def _set_windows_app_id(app_id: str = "com.sungback.commander") -> None:
 def _install_korean_qt_texts(app: QApplication) -> None:
     """Qt's own buttons (Yes / No / Cancel ...) in Korean, matching the rest of the UI."""
     translator = QTranslator(app)
-    if translator.load("qtbase_ko", QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)):
+    # 1. Standard Qt translations directory
+    trans_path = QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)
+    if translator.load("qtbase_ko", trans_path):
         app.installTranslator(translator)
+        return
+
+    # 2. PyInstaller bundled search paths
+    candidates = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.extend([
+            Path(meipass) / "translations",
+            Path(meipass) / "PySide6" / "translations",
+        ])
+    exe_dir = Path(sys.executable).parent
+    candidates.extend([
+        exe_dir / "translations",
+        exe_dir / "PySide6" / "translations",
+        exe_dir / "_internal" / "translations",
+        exe_dir / "_internal" / "PySide6" / "translations",
+    ])
+    for c in candidates:
+        if c.is_dir() and translator.load("qtbase_ko", str(c)):
+            app.installTranslator(translator)
+            return
 
 
 def main() -> int:

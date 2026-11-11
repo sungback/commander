@@ -4,7 +4,7 @@
 상태: `[ ]` 대기 / `[~]` 진행 중 / `[x]` 완료
 
 ## 현재 상태 요약 (세션 복원용)
-- **버전**: `v0.3.4` (`pyproject.toml`, `src/commander/__init__.py`)
+- **버전**: `v0.3.5` (`pyproject.toml`, `src/commander/__init__.py`)
 - **원격 저장소**: https://github.com/sungback/commander (`origin/main`)
 - **릴리스**:
   - `v0.1.0`: macOS 초기 릴리스 (`commander.dmg`, `commander.zip` 수동 업로드 완료)
@@ -15,10 +15,11 @@
   - `v0.3.2`: macOS 업데이트 확인 시 SSL 인증서 검증 실패(`URLError: CERTIFICATE_VERIFY_FAILED`) 수정 (`certifi` 번들 탑재 및 `_ssl_context` 적용)
   - `v0.3.3`: Windows 타이틀바 뒤 중복 앱 이름(`- commander`) 표시 방지(`app.setApplicationDisplayName("")`)
   - `v0.3.4`: Windows 자동 업데이트 시 파일 잠금 해제 대기 및 robocopy 자동 재시도(`/R:10 /W:1`) 미러링 적용으로 교체 실패 해결
+  - `v0.3.5`: 패키징된 독립 실행형 앱 번들(macOS/Windows)에 Qt 한국어 번역 리소스(`qtbase_ko.qm`) 동봉 및 다중 검색 경로 지원
 - **즉시 실행/검증 명령**:
   - `./scripts/check.sh` — `ruff` + `pytest` + 실제 홈 디렉터리 오프스크린 스모크/성능 체크
   - `./scripts/run.sh` — 소스 직접 실행 (`--app` 옵션 시 `/Applications/commander.app` 재빌드·설치·실행)
-- **최근 완료**: Windows 자동 업데이트 robocopy 및 파일 락 재시도 적용, 버전 `v0.3.4`로 올림 및 릴리스 태그 푸시
+- **최근 완료**: 패키징 앱 Qt 한국어 번역 리소스(`qtbase_ko.qm`) 동봉(`build_mac.sh`, `build_win.ps1`, `app.py`), 버전 `v0.3.5`로 올림 및 릴리스 태그 푸시
 - **다음 예정 작업**: 릴리스 후 실기기 확인 권장 — 헤드리스 테스트로는 검증 못 한 것: 실제 마우스 드래그 앤 드롭, OS 휴지통 이동, Finder/탐색기·터미널 실행, 네이티브 다크 모드, 메뉴 막대 단축키, 패키징된 앱의 Qt 한국어 번역(`qtbase_ko.qm`) 포함 여부
 
 ## 로드맵 (Total Commander / ForkLift 수준)

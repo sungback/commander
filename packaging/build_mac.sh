@@ -13,6 +13,7 @@ for sz in (16, 32, 64, 128, 256, 512):
     app_icon(sz * 2).pixmap(sz * 2, sz * 2).save(f"build/Commander.iconset/icon_{sz}x{sz}@2x.png")
 EOF
 iconutil -c icns build/Commander.iconset -o build/Commander.icns
+KO_QM=$(QT_QPA_PLATFORM=offscreen python3 -c "from PySide6.QtCore import QLibraryInfo; from pathlib import Path; p = Path(QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)) / 'qtbase_ko.qm'; print(p if p.is_file() else '')")
 SIGN_ID="${CODESIGN_IDENTITY:-$(security find-identity -v -p codesigning | sed -n 's/.*"\(Apple Development:[^"]*\)".*/\1/p' | head -n 1)}"
 pyinstaller --noconfirm --windowed --name commander \
   --icon build/Commander.icns \
@@ -20,6 +21,7 @@ pyinstaller --noconfirm --windowed --name commander \
   ${SIGN_ID:+--codesign-identity "$SIGN_ID"} \
   --paths src --exclude-module PySide6.QtWebEngineCore --exclude-module PySide6.QtQml \
   --exclude-module PySide6.Qt3DCore --exclude-module PySide6.QtQuick \
+  ${KO_QM:+--add-data "$KO_QM:translations"} \
   packaging/launcher.py
 ditto -c -k --keepParent dist/commander.app dist/commander.zip
 rm -rf dist/dmg && mkdir dist/dmg && cp -R dist/commander.app dist/dmg/

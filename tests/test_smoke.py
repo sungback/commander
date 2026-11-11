@@ -396,7 +396,7 @@ def test_function_key_bar_buttons(tmp_path, monkeypatch):
 def test_toggle_hidden_files(tmp_path):
     import zipfile
 
-    app = QApplication.instance() or QApplication([])
+    _app = QApplication.instance() or QApplication([])
     d = tmp_path / "dir"
     d.mkdir()
     (d / "visible.txt").write_bytes(b"12")
@@ -444,4 +444,13 @@ def test_toggle_hidden_files(tmp_path):
     win.close()
     win2 = MainWindow(state_file=state_file)
     assert win2.panels[0].show_hidden is True
+
+
+def test_install_korean_qt_texts():
+    from commander.app import _install_korean_qt_texts
+
+    app = QApplication.instance() or QApplication([])
+    # Should not raise
+    _install_korean_qt_texts(app)
+
     app.processEvents()
