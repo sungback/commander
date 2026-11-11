@@ -146,3 +146,24 @@ def test_trash_uses_trasher_and_reports_failures(tree):
     assert (src / "a.txt").exists()  # the fake trasher moves nothing
     with pytest.raises(OSError):
         ops.trash([src / "d"], trasher=lambda p: False)
+
+
+def test_remove_readonly_file_and_dir(tmp_path):
+    import stat
+
+    ro_file = tmp_path / "ro.txt"
+    ro_file.write_text("hello")
+    ro_file.chmod(stat.S_IREAD)
+
+    ro_dir = tmp_path / "ro_dir"
+    ro_dir.mkdir()
+    child = ro_dir / "child.txt"
+    child.write_text("child")
+    child.chmod(stat.S_IREAD)
+
+    ops.remove(ro_file)
+    assert not ro_file.exists()
+
+    ops.remove(ro_dir)
+    assert not ro_dir.exists()
+

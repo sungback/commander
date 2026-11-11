@@ -215,7 +215,12 @@ class _Run:
             if not (self.move and self._rename(src, dst)):
                 self._copy_file(src, dst, st)
                 if self.move:
-                    src.unlink()
+                    try:
+                        src.unlink()
+                    except PermissionError:
+                        with suppress(OSError):
+                            os.chmod(src, stat.S_IWRITE)
+                        src.unlink()
         finally:
             self.stats.done_bytes = start + size
             self.stats.done_items += 1
@@ -224,6 +229,13 @@ class _Run:
     def _rename(src: Path, dst: Path) -> bool:
         try:
             os.replace(src, dst)
+        except PermissionError:
+            with suppress(OSError):
+                os.chmod(dst, stat.S_IWRITE)
+            try:
+                os.replace(src, dst)
+            except OSError:
+                return False
         except OSError:
             return False  # other volume (or not permitted): fall back to copy + delete
         return True
@@ -232,7 +244,12 @@ class _Run:
         if stat.S_ISLNK(st.st_mode):
             link = os.readlink(src)
             if dst.exists() or dst.is_symlink():
-                dst.unlink()
+                try:
+                    dst.unlink()
+                except PermissionError:
+                    with suppress(OSError):
+                        os.chmod(dst, stat.S_IWRITE)
+                    dst.unlink()
             os.symlink(link, dst)
             return
         if not stat.S_ISREG(st.st_mode):
@@ -245,7 +262,12 @@ class _Run:
                     self.stats.done_bytes += len(chunk)
                     self.control.checkpoint()
             shutil.copystat(src, part, follow_symlinks=False)
-            os.replace(part, dst)
+            try:
+                os.replace(part, dst)
+            except PermissionError:
+                with suppress(OSError):
+                    os.chmod(dst, stat.S_IWRITE)
+                os.replace(part, dst)
         except BaseException:
             with suppress(OSError):
                 part.unlink()

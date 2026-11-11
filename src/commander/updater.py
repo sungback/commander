@@ -221,7 +221,13 @@ def apply_update_and_restart(
     if platform == "darwin":
         script = (
             'while kill -0 "$1" 2>/dev/null; do sleep 0.1; done; '
-            'rm -rf "$3" && mv "$2" "$3" && open "$3"; '
+            'BACKUP="${3}.old.$1"; '
+            'if [ -e "$3" ]; then mv "$3" "$BACKUP"; fi; '
+            'if mv "$2" "$3"; then '
+            '  rm -rf "$BACKUP" && open "$3"; '
+            'else '
+            '  if [ -e "$BACKUP" ]; then mv "$BACKUP" "$3" && open "$3"; fi; '
+            'fi; '
             'rm -rf "$4"'
         )
         stage_root = staged.parent.parent

@@ -170,3 +170,16 @@ def test_size_cache_invalidated(tree):
     ops.set_cached_size(dst, 123)
     transfer.transfer([src / "a.txt"], dst)
     assert ops.get_cached_size(dst) is None
+
+
+def test_transfer_overwrites_readonly_destination(tree):
+    import stat
+
+    src, dst = tree
+    dst_file = dst / "a.txt"
+    dst_file.write_text("old")
+    dst_file.chmod(stat.S_IREAD)
+
+    transfer.transfer([src / "a.txt"], dst, on_conflict=lambda _s, _d: "overwrite")
+    assert dst_file.read_text() == "aaa"
+

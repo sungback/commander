@@ -2,6 +2,7 @@
 import json
 import os
 import shutil
+import stat
 import threading
 import time
 from collections.abc import Callable, Iterable
@@ -181,9 +182,19 @@ def move(srcs: Iterable[Path], dst_dir: Path, overwrite: bool = False,
 def remove(path: Path) -> None:
     path = Path(path)
     if path.is_dir() and not path.is_symlink():
-        shutil.rmtree(path)
+        def _onerror(func, p, _exc):
+            with suppress(OSError):
+                os.chmod(p, stat.S_IWRITE)
+            func(p)
+
+        shutil.rmtree(path, onerror=_onerror)
     else:
-        path.unlink()
+        try:
+            path.unlink()
+        except PermissionError:
+            with suppress(OSError):
+                os.chmod(path, stat.S_IWRITE)
+            path.unlink()
     invalidate_size_cache(path)
 
 
