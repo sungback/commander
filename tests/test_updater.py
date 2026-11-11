@@ -162,11 +162,20 @@ def test_apply_update_and_restart_spawns_helper(tmp_path, monkeypatch):
     assert calls[-1][0] == "/bin/sh"
     assert calls[-1][4:] == ["12345", str(staged.resolve()), str(target.resolve()), str(staged.parent.parent.resolve())]
 
-    updater.apply_update_and_restart(staged, target, platform="win32", pid=12345)
+    # Windows: staged = …/stage/extracted/commander  (staged.name == "commander")
+    staged_win = tmp_path / "stage" / "extracted" / "commander"
+    staged_win.mkdir(parents=True)
+    target_win = tmp_path / "AppData" / "commander"
+
+    updater.apply_update_and_restart(staged_win, target_win, platform="win32", pid=12345)
     assert calls[-1][0] == "powershell.exe"
     ps_file = Path(calls[-1][calls[-1].index("-File") + 1])
     assert ps_file.is_file()
-    assert "commander.exe" in ps_file.read_text(encoding="utf-8")
+    ps_text = ps_file.read_text(encoding="utf-8")
+    assert "commander.exe" in ps_text
+    assert "Rename-Item" in ps_text  # 실행 중인 exe를 rename으로 교체하는 로직 존재 확인
+    # stage_root는 staged.parent("extracted").parent("stage") 여야 함
+    assert ps_file.parent == (tmp_path / "stage")
 
 
 def test_ui_check_for_updates_flow(tmp_path, monkeypatch):

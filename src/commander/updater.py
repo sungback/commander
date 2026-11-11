@@ -239,37 +239,66 @@ def apply_update_and_restart(
         )
 
     if platform == "win32":
-        stage_root = staged.parent if staged.name == "extracted" else staged.parent.parent
+        # stage_root: tempdir that contains both apply_update.ps1 and the extracted/ subtree.
+        # staged is always the directory holding commander.exe (e.g. …/extracted/commander/).
+        # Walk up until we reach the directory whose parent is the system temp root so the
+        # script file is written outside the extracted tree and survives until cleanup.
+        stage_root = staged.parent  # …/extracted/
+        if stage_root.name == "extracted":
+            stage_root = stage_root.parent  # …/commander_update_XXXX/
+
         ps_script = stage_root / "apply_update.ps1"
         ps_script.write_text(
             "param([int]$PidToWait, [string]$Staged, [string]$Target, [string]$StageRoot)\n"
-            "$logFile = Join-Path $Target 'commander_updater.log'\n"
+            "$logFile = Join-Path $env:TEMP 'commander_updater.log'\n"
             "function Write-Log($msg) {\n"
             "  $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'\n"
             "  \"[$ts] $msg\" | Out-File -FilePath $logFile -Append -Encoding utf8 -ErrorAction SilentlyContinue\n"
             "}\n"
-            "Write-Log \"Update started. PID: $PidToWait, Staged: $Staged, Target: $Target\"\n"
+            "Write-Log \"Update started. PID=$PidToWait Staged=$Staged Target=$Target\"\n"
+            # ── 1. 프로세스 종료 대기 ─────────────────────────────────────────
             "try {\n"
             "  $proc = Get-Process -Id $PidToWait -ErrorAction SilentlyContinue\n"
-            "  if ($proc) { $proc.WaitForExit(10000) }\n"
+            "  if ($proc) {\n"
+            "    Write-Log 'Waiting for process to exit...'\n"
+            "    $proc.WaitForExit(15000)\n"
+            "  }\n"
             "} catch { Write-Log \"Process wait exception: $_\" }\n"
-            "Start-Sleep -Seconds 1\n"
-            "Write-Log 'Copying files via robocopy...'\n"
-            "$process = Start-Process -FilePath 'robocopy.exe' -ArgumentList @($Staged, $Target, '/E', '/PURGE', '/R:10', '/W:1', '/NP', '/NDL') -Wait -NoNewWindow -PassThru\n"
-            "$exitCode = $process.ExitCode\n"
-            "Write-Log \"Robocopy finished with exit code $exitCode\"\n"
-            "if ($exitCode -ge 8) {\n"
-            "  Write-Log 'Robocopy error; attempting fallback copy...'\n"
-            "  Start-Sleep -Seconds 2\n"
-            "  Get-ChildItem -Path $Staged -Force | Copy-Item -Destination $Target -Recurse -Force -ErrorAction SilentlyContinue\n"
+            "Start-Sleep -Seconds 2\n"
+            # ── 2. 실행 중인 commander.exe를 rename으로 비워주기 ─────────────
+            "$oldExe = Join-Path $Target 'commander.exe'\n"
+            "$backupExe = Join-Path $Target 'commander.exe.old'\n"
+            "if (Test-Path $oldExe) {\n"
+            "  try {\n"
+            "    if (Test-Path $backupExe) { Remove-Item $backupExe -Force -ErrorAction SilentlyContinue }\n"
+            "    Rename-Item -Path $oldExe -NewName 'commander.exe.old' -Force -ErrorAction Stop\n"
+            "    Write-Log 'Renamed existing commander.exe -> commander.exe.old'\n"
+            "  } catch {\n"
+            "    Write-Log \"Rename failed (process still running?): $_\"\n"
+            "    Start-Sleep -Seconds 3\n"
+            "    try { Rename-Item -Path $oldExe -NewName 'commander.exe.old' -Force -ErrorAction Stop }\n"
+            "    catch { Write-Log \"Second rename failed: $_\" }\n"
+            "  }\n"
             "}\n"
+            # ── 3. 새 파일 복사 (robocopy) ───────────────────────────────────
+            "Write-Log 'Copying new files via robocopy...'\n"
+            "$rc = Start-Process 'robocopy.exe' -ArgumentList @($Staged, $Target, '/E', '/R:5', '/W:1', '/NP', '/NDL') -Wait -NoNewWindow -PassThru\n"
+            "Write-Log \"Robocopy exit code: $($rc.ExitCode)\"\n"
+            "if ($rc.ExitCode -ge 8) {\n"
+            "  Write-Log 'Robocopy error – fallback: xcopy'\n"
+            "  cmd /c \"xcopy /E /Y /I `\"$Staged`\" `\"$Target`\"\" 2>&1 | Out-File $logFile -Append -Encoding utf8\n"
+            "}\n"
+            # ── 4. 오래된 백업 제거 ───────────────────────────────────────────
+            "if (Test-Path $backupExe) { Remove-Item $backupExe -Force -ErrorAction SilentlyContinue }\n"
+            # ── 5. 재실행 ─────────────────────────────────────────────────────
             "$targetExe = Join-Path $Target 'commander.exe'\n"
             "if (Test-Path $targetExe) {\n"
-            "  Write-Log \"Relaunching $targetExe...\"\n"
+            "  Write-Log \"Relaunching $targetExe\"\n"
             "  Start-Process -FilePath $targetExe\n"
             "} else {\n"
-            "  Write-Log \"ERROR: $targetExe not found!\"\n"
+            "  Write-Log \"ERROR: $targetExe not found after update!\"\n"
             "}\n"
+            # ── 6. 스테이지 디렉터리 정리 ────────────────────────────────────
             "Start-Sleep -Seconds 2\n"
             "if (Test-Path $StageRoot) {\n"
             "  Remove-Item -Path $StageRoot -Recurse -Force -ErrorAction SilentlyContinue\n"
