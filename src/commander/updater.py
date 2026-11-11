@@ -6,6 +6,7 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 import zipfile
 from collections.abc import Callable
@@ -20,6 +21,10 @@ API_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
 MAC_ASSET = "commander.zip"
 WIN_ASSET = "commander-win64.zip"
 CHUNK_SIZE = 64 * 1024
+HELPER_MARKER = "helper_started"
+_CREATE_NO_WINDOW = 0x08000000
+_CREATE_NEW_PROCESS_GROUP = 0x00000200
+_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
 
 class UpdateCancelled(Exception):
@@ -207,13 +212,32 @@ def download_and_stage(
     raise ValueError(f"unsupported platform: {platform!r}")
 
 
+def _wait_for_helper(proc: subprocess.Popen, marker: Path, timeout: float) -> None:
+    """Wait until the update helper creates `marker`; fail loudly if it dies or never starts."""
+    deadline = time.monotonic() + timeout
+    while not marker.exists():
+        code = proc.poll()
+        if code is not None:
+            raise OSError(f"update helper exited before starting (exit code {code})")
+        if time.monotonic() > deadline:
+            with suppress(OSError):
+                proc.kill()
+            raise OSError(f"update helper did not start within {timeout:.0f} seconds")
+        time.sleep(0.1)
+
+
 def apply_update_and_restart(
     staged: Path,
     target: Path,
     platform: str = sys.platform,
     pid: int | None = None,
+    helper_timeout: float = 20.0,
 ) -> subprocess.Popen:
-    """Spawn a detached OS helper that waits for `pid` to exit, replaces `target`, and relaunches."""
+    """Spawn a detached OS helper that waits for `pid` to exit, replaces `target`, and relaunches.
+
+    On Windows this blocks until the helper confirms it is running (marker file) and raises
+    OSError if it exits or does not start in time, so the caller never quits for nothing.
+    """
     cur_pid = os.getpid() if pid is None else pid
     staged = Path(staged).resolve()
     target = Path(target).resolve()
@@ -256,6 +280,8 @@ def apply_update_and_restart(
             "  \"[$ts] $msg\" | Out-File -FilePath $logFile -Append -Encoding utf8 -ErrorAction SilentlyContinue\n"
             "}\n"
             "Write-Log \"Update started. PID=$PidToWait Staged=$Staged Target=$Target\"\n"
+            # 앱은 이 표시 파일이 생길 때까지 종료하지 않고 기다린다 (helper 시작 확인용)
+            f"New-Item -ItemType File -Path (Join-Path $StageRoot '{HELPER_MARKER}') -Force | Out-Null\n"
             # ── 1. 프로세스 종료 대기 ─────────────────────────────────────────
             "try {\n"
             "  $proc = Get-Process -Id $PidToWait -ErrorAction SilentlyContinue\n"
@@ -285,7 +311,7 @@ def apply_update_and_restart(
             "$rc = Start-Process 'robocopy.exe' -ArgumentList @($Staged, $Target, '/E', '/R:5', '/W:1', '/NP', '/NDL') -Wait -NoNewWindow -PassThru\n"
             "Write-Log \"Robocopy exit code: $($rc.ExitCode)\"\n"
             "if ($rc.ExitCode -ge 8) {\n"
-            "  Write-Log 'Robocopy error – fallback: xcopy'\n"
+            "  Write-Log 'Robocopy error - fallback: xcopy'\n"
             "  cmd /c \"xcopy /E /Y /I `\"$Staged`\" `\"$Target`\"\" 2>&1 | Out-File $logFile -Append -Encoding utf8\n"
             "}\n"
             # ── 4. 오래된 백업 제거 ───────────────────────────────────────────
@@ -304,28 +330,38 @@ def apply_update_and_restart(
             "  Remove-Item -Path $StageRoot -Recurse -Force -ErrorAction SilentlyContinue\n"
             "}\n"
             "Write-Log 'Update script finished.'\n",
-            encoding="utf-8",
+            # BOM: Windows PowerShell 5.1 reads BOM-less files in the ANSI code page (CP949 on Korean Windows)
+            encoding="utf-8-sig",
         )
-        flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        return subprocess.Popen(
-            [
-                "powershell.exe",
-                "-NoProfile",
-                "-NonInteractive",
-                "-WindowStyle",
-                "Hidden",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(ps_script),
-                str(cur_pid),
-                str(staged).rstrip("\\/"),
-                str(target).rstrip("\\/"),
-                str(stage_root).rstrip("\\/"),
-            ],
-            creationflags=flags,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        marker = stage_root / HELPER_MARKER
+        with suppress(FileNotFoundError):
+            marker.unlink()
+        args = [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(ps_script),
+            str(cur_pid),
+            str(staged).rstrip("\\/"),
+            str(target).rstrip("\\/"),
+            str(stage_root).rstrip("\\/"),
+        ]
+        # CREATE_NO_WINDOW (not DETACHED_PROCESS): powershell.exe is a console program and needs a
+        # (hidden) console. CREATE_BREAKAWAY_FROM_JOB: if commander runs inside a job object, the
+        # helper must not be killed together with it when commander exits.
+        base = _CREATE_NO_WINDOW | _CREATE_NEW_PROCESS_GROUP
+        popen_kw = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+        try:
+            proc = subprocess.Popen(args, creationflags=base | _CREATE_BREAKAWAY_FROM_JOB, **popen_kw)
+        except PermissionError:
+            # the job forbids breakaway; launching inside it is the best we can do
+            proc = subprocess.Popen(args, creationflags=base, **popen_kw)
+        _wait_for_helper(proc, marker, helper_timeout)
+        return proc
 
     raise ValueError(f"unsupported platform: {platform!r}")

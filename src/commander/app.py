@@ -1077,7 +1077,11 @@ class MainWindow(QMainWindow):
                 if app is not None:
                     app.quit()
             except OSError as e:
-                self._error(e)
+                QMessageBox.critical(
+                    self, "업데이트 설치 실패",
+                    f"업데이트 도우미를 시작하지 못해 앱을 교체하지 않았습니다.\n\n{e}\n\n"
+                    f"릴리스 페이지에서 직접 받아 설치해 주세요: {info.html_url or info.download_url}",
+                )
 
         def on_failed(err: str) -> None:
             dialog.reset()

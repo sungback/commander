@@ -145,12 +145,18 @@ def test_apply_update_and_restart_spawns_helper(tmp_path, monkeypatch):
     import subprocess
 
     calls: list[list[str]] = []
+    flags: list[int] = []
 
     class _DummyProc:
-        pass
+        def poll(self):
+            return None
 
-    def fake_popen(cmd, **_kwargs):
+    def fake_popen(cmd, **kwargs):
         calls.append(list(cmd))
+        if cmd[0] == "powershell.exe":
+            flags.append(kwargs["creationflags"])
+            # 실제 helper처럼 시작 표시 파일을 만든다
+            (Path(cmd[-1]) / updater.HELPER_MARKER).touch()
         return _DummyProc()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
@@ -171,11 +177,71 @@ def test_apply_update_and_restart_spawns_helper(tmp_path, monkeypatch):
     assert calls[-1][0] == "powershell.exe"
     ps_file = Path(calls[-1][calls[-1].index("-File") + 1])
     assert ps_file.is_file()
-    ps_text = ps_file.read_text(encoding="utf-8")
+    raw = ps_file.read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf")  # PowerShell 5.1이 CP949로 오독하지 않도록 BOM
+    ps_text = raw.decode("utf-8-sig")
+    assert ps_text.isascii()
     assert "commander.exe" in ps_text
     assert "Rename-Item" in ps_text  # 실행 중인 exe를 rename으로 교체하는 로직 존재 확인
+    assert updater.HELPER_MARKER in ps_text
     # stage_root는 staged.parent("extracted").parent("stage") 여야 함
     assert ps_file.parent == (tmp_path / "stage")
+    # DETACHED_PROCESS(0x8)가 아니라 숨은 콘솔 + Job 이탈로 띄운다
+    assert flags[-1] & updater._CREATE_NO_WINDOW
+    assert flags[-1] & updater._CREATE_BREAKAWAY_FROM_JOB
+    assert not flags[-1] & 0x00000008
+
+
+def test_apply_update_windows_breakaway_denied_falls_back(tmp_path, monkeypatch):
+    import subprocess
+
+    flags: list[int] = []
+
+    class _DummyProc:
+        def poll(self):
+            return None
+
+    def fake_popen(cmd, **kwargs):
+        flags.append(kwargs["creationflags"])
+        if kwargs["creationflags"] & updater._CREATE_BREAKAWAY_FROM_JOB:
+            raise PermissionError(5, "Access is denied")
+        (Path(cmd[-1]) / updater.HELPER_MARKER).touch()
+        return _DummyProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    staged = tmp_path / "stage" / "extracted" / "commander"
+    staged.mkdir(parents=True)
+    updater.apply_update_and_restart(staged, tmp_path / "app", platform="win32", pid=1)
+    assert len(flags) == 2 and not flags[1] & updater._CREATE_BREAKAWAY_FROM_JOB
+
+
+def test_apply_update_windows_helper_failure_raises(tmp_path, monkeypatch):
+    import subprocess
+
+    killed: list[bool] = []
+
+    class _DeadProc:
+        def poll(self):
+            return 1
+
+    class _SilentProc:
+        def poll(self):
+            return None
+
+        def kill(self):
+            killed.append(True)
+
+    staged = tmp_path / "stage" / "extracted" / "commander"
+    staged.mkdir(parents=True)
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *_a, **_k: _DeadProc())
+    with pytest.raises(OSError, match="exit code 1"):
+        updater.apply_update_and_restart(staged, tmp_path / "app", platform="win32", pid=1)
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *_a, **_k: _SilentProc())
+    with pytest.raises(OSError, match="did not start"):
+        updater.apply_update_and_restart(staged, tmp_path / "app", platform="win32", pid=1, helper_timeout=0.3)
+    assert killed == [True]
 
 
 def test_ui_check_for_updates_flow(tmp_path, monkeypatch):
