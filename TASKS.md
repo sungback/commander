@@ -4,7 +4,7 @@
 상태: `[ ]` 대기 / `[~]` 진행 중 / `[x]` 완료
 
 ## 현재 상태 요약 (세션 복원용)
-- **버전**: `v0.3.7` (`pyproject.toml`, `src/commander/__init__.py`)
+- **버전**: `v0.3.8` (`pyproject.toml`, `src/commander/__init__.py`)
 - **원격 저장소**: https://github.com/sungback/commander (`origin/main`)
 - **릴리스**:
   - `v0.1.0`: macOS 초기 릴리스 (`commander.dmg`, `commander.zip` 수동 업로드 완료)
@@ -18,10 +18,11 @@
   - `v0.3.5`: 패키징된 독립 실행형 앱 번들(macOS/Windows)에 Qt 한국어 번역 리소스(`qtbase_ko.qm`) 동봉 및 다중 검색 경로 지원
   - `v0.3.6`: Windows/POSIX 읽기 전용(Read-only) 파일 삭제 및 덮어쓰기 에러 자동 권한 해제(`ops.py`, `transfer.py`) 및 macOS 업데이트 실패 시 롤백 안전장치(`updater.py`) 적용
   - `v0.3.7`: Windows 자동 업데이트 프로세스 잠금 해제 개선 — `stage_root` 계산 버그 수정, 실행 중인 `commander.exe`를 `Rename-Item`으로 먼저 치운 후 새 파일 복사(robocopy/xcopy fallback) 적용
+  - `v0.3.8`: Windows 자동 업데이트 릴리스 테스트 버전 (버전 v0.3.8 범프)
 - **즉시 실행/검증 명령**:
   - `./scripts/check.sh` — `ruff` + `pytest` + 실제 홈 디렉터리 오프스크린 스모크/성능 체크
   - `./scripts/run.sh` — 소스 직접 실행 (`--app` 옵션 시 `/Applications/commander.app` 재빌드·설치·실행)
-- **최근 완료**: Windows 자동 업데이트 안정성 개선(exe rename 및 stage_root 정규화), 버전 `v0.3.7`으로 올림 및 릴리스 태그 푸시
+- **최근 완료**: Windows 자동 업데이트 테스트용 버전 v0.3.8 릴리스 태그 푸시
 - **다음 예정 작업**: 릴리스 후 실기기 확인 권장 — 헤드리스 테스트로는 검증 못 한 것: 실제 마우스 드래그 앤 드롭, OS 휴지통 이동, Finder/탐색기·터미널 실행, 네이티브 다크 모드, 메뉴 막대 단축키, 패키징된 앱의 Qt 한국어 번역(`qtbase_ko.qm`) 포함 여부
 
 ## 로드맵 (Total Commander / ForkLift 수준)
