@@ -252,7 +252,7 @@ def test_favorites_menu_and_persistence(tmp_path, monkeypatch):
     assert not win._favorites_menu().actions()[-1].isEnabled()
 
 
-def test_folder_shortcuts_button_add_go_remove_and_restore(tmp_path, monkeypatch):
+def test_add_folder_tabs_and_restore(tmp_path, monkeypatch):
     from PySide6.QtWidgets import QApplication, QFileDialog
 
     app = QApplication.instance() or QApplication([])
@@ -262,23 +262,30 @@ def test_folder_shortcuts_button_add_go_remove_and_restore(tmp_path, monkeypatch
     left, right = win.panels
     left.set_path(str(d))
     right.set_path(str(d / "docs"))
-    assert left.favorites_button.text() == right.favorites_button.text() == "+"
+    assert left.add_tab_button.text() == right.add_tab_button.text() == "+"
     monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *_: str(d))
-    win._folder_shortcuts_menu(right).actions()[0].trigger()
-    assert win.favorites == [str(d)]
-    win.active_index = lambda: 0
-    win._folder_shortcuts_menu(right).actions()[2].trigger()
+    right.add_tab_button.click()
+    assert right.tabs.count() == 2 and right.tabs.tabText(1) == d.name
     assert right.current_path() == str(d)
-    assert left.current_path() == str(d)
-
+    assert left.tabs.count() == 1 and left.current_path() == str(d)
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *_: str(d / "docs"))
+    right.add_tab_button.click()
+    assert right.tabs.count() == 3 and right.tabs.tabText(2) == "docs"
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *_: "")
+    right.add_tab_button.click()
+    assert right.tabs.count() == 3
+    win.save_state()
     restored = MainWindow(state_file=state)
-    assert restored.favorites == [str(d)]
-    remove = win._folder_shortcuts_menu(left).actions()[-1].menu()
-    remove.actions()[0].trigger()
-    assert win.favorites == []
-    assert MainWindow(state_file=state).favorites == []
-    win.close()
+    assert restored.panels[1].tabs.count() == 3
+    assert restored.panels[1].tabs.widget(1).current_path() == str(d)
+    restored.panels[1].tabs.tabCloseRequested.emit(1)
+    assert restored.panels[1].tabs.count() == 2
     restored.close()
+    win._state_file = None
+    win.close()
+    reopened = MainWindow(state_file=state)
+    assert reopened.panels[1].tabs.count() == 2
+    reopened.close()
     app.processEvents()
 
 

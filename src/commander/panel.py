@@ -17,6 +17,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QPalette, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QComboBox,
+    QFileDialog,
     QFileSystemModel,
     QHBoxLayout,
     QInputDialog,
@@ -936,11 +937,12 @@ class FilePanel(QWidget):
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         self.tabs.setTabsClosable(True)
-        self.favorites_button = QToolButton()
-        self.favorites_button.setText("+")
-        self.favorites_button.setToolTip("자주 가는 폴더 추가 및 관리")
-        self.favorites_button.setAccessibleName("자주 가는 폴더 추가 및 관리")
-        self.tabs.setCornerWidget(self.favorites_button, Qt.TopRightCorner)
+        self.add_tab_button = QToolButton()
+        self.add_tab_button.setText("+")
+        self.add_tab_button.setToolTip("폴더를 새 탭으로 추가")
+        self.add_tab_button.setAccessibleName("폴더를 새 탭으로 추가")
+        self.add_tab_button.clicked.connect(self.choose_new_tab)
+        self.tabs.setCornerWidget(self.add_tab_button, Qt.TopRightCorner)
         self.tabs.tabCloseRequested.connect(self.close_tab)
         self.tabs.currentChanged.connect(lambda _: self.current_changed.emit())
         self._hidden_columns: set[int] = set()
@@ -989,6 +991,11 @@ class FilePanel(QWidget):
         tab.current_changed = self.current_changed.emit
         self.tabs.setCurrentIndex(self.tabs.addTab(tab, _title(path)))
         tab.view.setFocus()
+
+    def choose_new_tab(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "새 탭에 열 폴더 선택", self.current_path())
+        if path:
+            self.new_tab(path)
 
     def to_state(self) -> dict:
         return {

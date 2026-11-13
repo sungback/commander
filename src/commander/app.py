@@ -24,7 +24,6 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
-    QFileDialog,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -93,7 +92,6 @@ class MainWindow(QMainWindow):
         self.splitter = QSplitter()
         for p in self.panels:
             self.splitter.addWidget(p)
-            p.favorites_button.clicked.connect(lambda _, panel=p: self._show_folder_shortcuts(panel))
             p.file_activated.connect(self.open_default)
             p.current_changed.connect(lambda: self._quick_side is not None and self._quick_timer.start())
             p.current_changed.connect(self._update_prompt)
@@ -448,27 +446,6 @@ class MainWindow(QMainWindow):
             return
         panel.set_path(path)
         panel.view.setFocus()
-
-    def _add_folder_shortcut(self, panel: FilePanel) -> None:
-        path = QFileDialog.getExistingDirectory(self, "자주 가는 폴더 선택", panel.current_path())
-        if path:
-            self.add_favorite(path)
-
-    def _folder_shortcuts_menu(self, panel: FilePanel) -> QMenu:
-        menu = QMenu(self)
-        menu.addAction("폴더 선택하여 추가...", lambda: self._add_folder_shortcut(panel))
-        if self.favorites:
-            menu.addSeparator()
-            for fav in self.favorites:
-                menu.addAction(fav, lambda f=fav: self._go_favorite_in_panel(panel, f))
-            remove = menu.addMenu("등록된 폴더 삭제")
-            for fav in self.favorites:
-                remove.addAction(fav, lambda f=fav: self.remove_favorite(f))
-        return menu
-
-    def _show_folder_shortcuts(self, panel: FilePanel) -> None:
-        button = panel.favorites_button
-        self._folder_shortcuts_menu(panel).exec(button.mapToGlobal(button.rect().bottomLeft()))
 
     def _favorites_menu(self) -> QMenu:
         panel = self.panels[self.active_index()]
