@@ -474,6 +474,32 @@ def test_shell_commands_per_platform(tmp_path):
     assert shell.terminal_command("win32")[0] == "cmd.exe"
 
 
+def test_macos_command_uses_login_shell_path(tmp_path, monkeypatch):
+    import shlex
+    import sys
+
+    import pytest
+
+    from commander import shell
+
+    if sys.platform != "darwin":
+        pytest.skip("macOS login shell behavior")
+    config = tmp_path / "config"
+    bin_dir = tmp_path / "bin with spaces"
+    config.mkdir()
+    bin_dir.mkdir()
+    (config / ".zprofile").write_text(f"export PATH={shlex.quote(str(bin_dir))}:$PATH\n")
+    code = bin_dir / "code"
+    code.write_text('#!/bin/sh\nprintf "%s\\n%s" "$PWD" "$1"\n')
+    code.chmod(0o755)
+    monkeypatch.setenv("SHELL", "/bin/zsh")
+    monkeypatch.setenv("ZDOTDIR", str(config))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    status, output = shell.run_capture("code .", tmp_path)
+    assert status == 0
+    assert output.splitlines() == [str(tmp_path), "."]
+
+
 def test_conflict_dialog_always_offers_apply_to_all_when_count_unknown(tmp_path, monkeypatch):
     from PySide6.QtCore import QTimer
 

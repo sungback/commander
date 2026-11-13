@@ -81,8 +81,17 @@ def run_capture(command: str, cwd: Path, control=None) -> tuple[int, str]:
     from .transfer import Cancelled
 
     posix = os.name != "nt"
+    if sys.platform == "darwin":
+        # Finder-launched apps inherit a minimal PATH. A login shell loads the user's
+        # normal macOS environment (including /usr/local/bin and shell configuration).
+        login_shell = os.environ.get("SHELL") or "/bin/zsh"
+        argv = [login_shell, "-l", "-c", command]
+        use_shell = False
+    else:
+        argv = command
+        use_shell = True
     proc = subprocess.Popen(
-        command, shell=True, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        argv, shell=use_shell, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT, start_new_session=posix)
     while True:
         try:
