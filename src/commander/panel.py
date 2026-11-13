@@ -1,5 +1,7 @@
 import os
 import posixpath
+import shutil
+import time
 from fnmatch import fnmatchcase
 from pathlib import Path
 
@@ -337,6 +339,7 @@ class _Tab(QWidget):
         self.remote: FtpClient | SftpClient | None = None  # set while browsing an FTP server
         self.remote_path = "/"
         self.local_dir = path  # last local folder, kept while browsing a remote
+        self._free_space_cache: tuple[str, float, str] | None = None
         self.flat = False  # local folder shown with all files of its subfolders in one list
         self.hidden_columns: set[int] = set()  # column indexes hidden by the user's settings
         self._size_worker: DirSizeWorker | None = None
@@ -756,10 +759,29 @@ class _Tab(QWidget):
             total_bytes += self._entry_size(idx)
         sel_rows = [i for i in self.view.selectionModel().selectedRows(0) if i.data() != ".."]
         sel_bytes = sum(self._entry_size(i) for i in sel_rows)
-        self.status_bar.setText(
+        text = (
             f"{len(sel_rows)} / {total_items}개 선택 "
             f"({ops.format_size(sel_bytes)} / {ops.format_size(total_bytes)})"
         )
+        if not self.in_remote:
+            path = str(self.archive.parent) if self.in_archive else self.local_dir
+            now = time.monotonic()
+            if (self._free_space_cache is None or self._free_space_cache[0] != path
+                    or now - self._free_space_cache[1] >= 5):
+                try:
+                    free = float(shutil.disk_usage(path).free)
+                    for unit in ("B", "KB", "MB", "GB", "TB"):
+                        if free < 1024 or unit == "TB":
+                            size = f"{int(free)} B" if unit == "B" else f"{free:.2f} {unit}"
+                            break
+                        free /= 1024
+                except OSError:
+                    size = ""
+                self._free_space_cache = (path, now, size)
+            size = self._free_space_cache[2]
+            if size:
+                text += f" [{size} 남음]"
+        self.status_bar.setText(text)
 
     def _name_rows(self) -> list[QModelIndex]:
         """Column-0 indexes of every listed entry except '..' (works in all three modes)."""

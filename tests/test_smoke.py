@@ -151,7 +151,7 @@ def test_keyboard_navigation(tmp_path):
 
     # Background DirSizeWorker automatically populates folder size without pressing Space
     _wait(lambda: panel.model.index(row("sub").row(), 1, panel.view.rootIndex()).data() == "4 B")
-    assert "0 / 2개 선택 (0 B / 5 B)" == panel.status_bar.text()
+    assert panel.status_bar.text().startswith("0 / 2개 선택 (0 B / 5 B) [")
 
     panel.view.setCurrentIndex(row("sub"))
     QTest.keyClick(panel.view, Qt.Key_Return)
@@ -165,11 +165,40 @@ def test_keyboard_navigation(tmp_path):
     panel.view.clearSelection()  # setCurrentIndex selects the row itself
     QTest.keyClick(panel.view, Qt.Key_Space)
     assert [p.name for p in panel.selected_paths()] == ["x.txt"]
-    assert "1 / 2개 선택 (1 B / 5 B)" == panel.status_bar.text()
+    assert panel.status_bar.text().startswith("1 / 2개 선택 (1 B / 5 B) [")
     panel.view.setCurrentIndex(row("x.txt"))
     QTest.keyClick(panel.view, Qt.Key_Space)
     assert panel.selected_paths() == []
-    assert "0 / 2개 선택 (0 B / 5 B)" == panel.status_bar.text()
+    assert panel.status_bar.text().startswith("0 / 2개 선택 (0 B / 5 B) [")
+    app.processEvents()
+
+
+def test_free_space_status_per_panel(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from commander import panel as panel_mod
+
+    app = QApplication.instance() or QApplication([])
+    left, right = tmp_path / "left", tmp_path / "right"
+    left.mkdir()
+    right.mkdir()
+
+    def disk_usage(path):
+        if path == str(left):
+            return SimpleNamespace(free=int(29.46 * 1024**3))
+        if path == str(right):
+            return SimpleNamespace(free=512 * 1024**2)
+        raise OSError("unavailable")
+
+    monkeypatch.setattr(panel_mod.shutil, "disk_usage", disk_usage)
+    win = MainWindow()
+    win.panels[0].set_path(str(left))
+    win.panels[1].set_path(str(right))
+    assert win.panels[0].status_bar.text().endswith("[29.46 GB 남음]")
+    assert win.panels[1].status_bar.text().endswith("[512.00 MB 남음]")
+    win.panels[0].set_path(str(tmp_path))
+    assert "남음" not in win.panels[0].status_bar.text()
+    win.close()
     app.processEvents()
 
 
