@@ -127,6 +127,35 @@ def test_tabs_are_independent(tmp_path):
     app.processEvents()
 
 
+def test_path_bar_click_ancestor_and_edit(tmp_path):
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+
+    app = QApplication.instance() or QApplication([])
+    ancestor = tmp_path / "parent folder"
+    child = ancestor / "자식"
+    child.mkdir(parents=True)
+    win = MainWindow()
+    win.show()
+    panel = win.panels[0]
+    panel.set_path(str(child))
+    panel.view.setFocus()
+    app.processEvents()
+    bar = panel.path_bar
+    bar.setCursorPosition(len(str(ancestor)) - 3)
+    point = bar.cursorRect().center() + QPoint(1, 0)
+    QTest.mouseClick(bar, Qt.LeftButton, pos=point)
+    assert panel.current_path() == str(ancestor)
+    assert panel.go_back() and panel.current_path() == str(child)
+
+    bar.setFocus()
+    bar.selectAll()
+    QTest.keyClicks(bar, str(tmp_path))
+    QTest.keyClick(bar, Qt.Key_Return)
+    assert panel.current_path() == str(tmp_path)
+    win.close()
+
+
 def test_keyboard_navigation(tmp_path):
     from PySide6.QtCore import Qt
     from PySide6.QtTest import QTest

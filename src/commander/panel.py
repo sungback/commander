@@ -219,6 +219,42 @@ class _FilterEdit(QLineEdit):
             super().keyPressEvent(e)
 
 
+class _PathEdit(QLineEdit):
+    """Click an ancestor to navigate; focus the field to edit the path normally."""
+
+    def __init__(self, tab: "_Tab", path: str):
+        super().__init__(path)
+        self._tab = tab
+        self._mouse_focus = False
+        self.setToolTip("상위 폴더 이름을 클릭하여 이동 · 경로를 직접 입력하려면 현재 폴더나 빈 곳 클릭")
+
+    def focusInEvent(self, event) -> None:
+        self._mouse_focus = event.reason() == Qt.MouseFocusReason
+        super().focusInEvent(event)
+
+    def mousePressEvent(self, event) -> None:
+        tab = self._tab
+        path = self.text()
+        navigate = not self.hasFocus() or self._mouse_focus
+        self._mouse_focus = False
+        if (event.button() == Qt.LeftButton and navigate and not tab.in_archive
+                and not tab.in_remote and not tab.flat and path == tab.local_dir):
+            pos = self.cursorPositionAt(event.position().toPoint())
+            if pos < len(path) and path[pos] == os.sep and pos:
+                pos -= 1
+            end = path.find(os.sep, pos)
+            if end < 0:
+                end = len(path)
+            drive = os.path.splitdrive(path)[0]
+            target = drive + os.sep if end == len(drive) else path[:end]
+            if end < len(path) and os.path.isdir(target):
+                tab.set_path(target)
+                tab.view.setFocus()
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+
 class _HiddenDelegate(QStyledItemDelegate):
     def initStyleOption(self, option, index) -> None:
         super().initStyleOption(option, index)
@@ -324,7 +360,7 @@ class _Tab(QWidget):
 
         self.drive_box = QComboBox()
         self.drive_box.setFocusPolicy(Qt.NoFocus)
-        self.path_bar = QLineEdit(path)
+        self.path_bar = _PathEdit(self, path)
         self.path_changed = None  # callback(path), set by FilePanel
         self.file_activated = None  # callback(Path): Enter / double-click on a local file
         self.context_requested = None  # callback(global QPoint): right-click in the list
