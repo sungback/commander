@@ -173,7 +173,7 @@ class MainWindow(QMainWindow):
         for cmd in self.commands:
             act = QAction(cmd.label, self)
             act.setMenuRole(QAction.NoRole)
-            if cmd.id == "toggle_hidden":
+            if cmd.id in ("toggle_hidden", "flat", "quick_view"):
                 act.setCheckable(True)
             act.triggered.connect(lambda _=False, c=cmd.id, h=handlers[cmd.id]: self._run_command(c, h))
             if cmd.menu not in self.menus:
@@ -181,7 +181,7 @@ class MainWindow(QMainWindow):
             self.menus[cmd.menu].addAction(act)
             self.addAction(act)  # keeps the shortcut alive even if the menu bar is hidden
             self.actions_by_name[cmd.id] = act
-        self.menus["탐색"].aboutToShow.connect(self._sync_hidden_action)
+        self.menus["탐색"].aboutToShow.connect(self._sync_view_actions)
         self.tools_menu = self.menus["도구"]
         self._tool_actions: list[QAction] = []
         help_menu = self.menuBar().addMenu("도움말")
@@ -470,8 +470,10 @@ class MainWindow(QMainWindow):
         panel = self.panels[self.active_index()]
         if panel.in_archive or panel.in_remote:
             self._error(ValueError("평면 보기는 로컬 폴더에서만 쓸 수 있습니다"))
+            self._sync_view_actions()
             return
         panel.toggle_flat()
+        self._sync_view_actions()
 
     def _refresh_flat(self) -> None:
         for panel in self.panels:
@@ -495,6 +497,7 @@ class MainWindow(QMainWindow):
             self.quick.hide()
             self.quick.show_message("")
             self.panels[side].show()
+        self._sync_view_actions()
         return self._quick_side is not None
 
     def _update_quick(self) -> None:
@@ -511,12 +514,14 @@ class MainWindow(QMainWindow):
 
     def toggle_hidden(self) -> bool:
         shown = self.panels[self.active_index()].toggle_hidden()
-        self._sync_hidden_action()
+        self._sync_view_actions()
         return shown
 
-    def _sync_hidden_action(self) -> None:
-        self.actions_by_name["toggle_hidden"].setChecked(
-            self.panels[self.active_index()].show_hidden)
+    def _sync_view_actions(self) -> None:
+        panel = self.panels[self.active_index()]
+        self.actions_by_name["toggle_hidden"].setChecked(panel.show_hidden)
+        self.actions_by_name["flat"].setChecked(panel.flat)
+        self.actions_by_name["quick_view"].setChecked(self._quick_side is not None)
 
     def open_default(self, path: Path) -> None:
         """Open a local file with the application the OS associates with it."""

@@ -137,6 +137,7 @@ def test_quick_view_replaces_inactive_panel(tmp_path, monkeypatch):
 
     assert win.actions_by_name["quick_view"].shortcut().toString() in ("Ctrl+Q", "Meta+Q")
     assert win.toggle_quick_view() is True
+    assert win.actions_by_name["quick_view"].isChecked()
     assert win.splitter.count() == 2 and win.splitter.widget(1) is win.quick
     assert right.isHidden() and not win.quick.isHidden()
     assert win.splitter.sizes() == sizes
@@ -155,6 +156,7 @@ def test_quick_view_replaces_inactive_panel(tmp_path, monkeypatch):
     win.save_state()  # still two panel sizes while Quick View is on
 
     assert win.toggle_quick_view() is False
+    assert not win.actions_by_name["quick_view"].isChecked()
     assert win.splitter.widget(1) is right and not right.isHidden() and win.quick.isHidden()
     assert win.splitter.sizes() == sizes and win.quick.path is None
 
@@ -183,6 +185,13 @@ def test_flat_view_lists_subtree_and_keeps_file_operations(tmp_path, monkeypatch
     win.actions_by_name["flat"].trigger()
     j = os.path.join
     assert left.flat and rows() == ["..", "f.txt", j("sub", "one.txt"), j("sub", "deep", "two.log")]
+    assert win.actions_by_name["flat"].isChecked()
+    win.active_index = lambda: 1
+    win.menus["탐색"].aboutToShow.emit()
+    assert not win.actions_by_name["flat"].isChecked()
+    win.active_index = lambda: 0
+    win.menus["탐색"].aboutToShow.emit()
+    assert win.actions_by_name["flat"].isChecked()
     assert left.current_path() == str(a) and "평면 보기" in left.path_bar.text()
     assert left.status_bar.text() == "0 / 3개 선택 (0 B / 4 B)"
     assert not left.in_archive and not left.in_remote
@@ -241,5 +250,6 @@ def test_flat_view_limit_and_refused_in_archives(tmp_path, monkeypatch):
     left.set_path(str(a / "z.zip"))
     errors = []
     monkeypatch.setattr(QMessageBox, "critical", lambda *args: errors.append(args[2]))
-    win.toggle_flat()
+    win.actions_by_name["flat"].trigger()
     assert len(errors) == 1 and left.in_archive and not left.flat
+    assert not win.actions_by_name["flat"].isChecked()
