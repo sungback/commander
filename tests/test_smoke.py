@@ -413,12 +413,30 @@ def test_toggle_hidden_files(tmp_path):
     _wait(lambda: {"visible.txt", "arc.zip"} <= _names(p))
     assert not p.show_hidden
     assert ".hidden.txt" not in _names(p)
+    action = win.actions_by_name["toggle_hidden"]
+    win.menus["탐색"].aboutToShow.emit()
+    assert action.isCheckable() and not action.isChecked()
 
     # Toggle hidden on (Ctrl+H / Ctrl+.)
     assert win.toggle_hidden() is True
     assert p.show_hidden
+    assert action.isChecked()
     _wait(lambda: ".hidden.txt" in _names(p))
     assert p.model.index(0, 0, p.view.rootIndex()).data() == ".."
+
+    from PySide6.QtGui import QPalette
+    from PySide6.QtWidgets import QStyleOptionViewItem
+
+    def text_color(index):
+        option = QStyleOptionViewItem()
+        option.palette = p.view.palette()
+        p.view.itemDelegate().initStyleOption(option, index)
+        return option.palette.color(QPalette.Text)
+
+    hidden = p.model.index(str(d / ".hidden.txt"))
+    visible = p.model.index(str(d / "visible.txt"))
+    assert text_color(hidden) == p.view.palette().color(QPalette.Disabled, QPalette.Text)
+    assert text_color(visible) == p.view.palette().color(QPalette.Active, QPalette.Text)
 
     # New tab inherits show_hidden state
     p.new_tab()
@@ -434,6 +452,8 @@ def test_toggle_hidden_files(tmp_path):
         return [m.index(r, 0).data() for r in range(m.rowCount())]
 
     assert arch_rows() == ["..", ".env", "pub.txt"]
+    assert text_color(p.view.model().index(1, 0)) == p.view.palette().color(
+        QPalette.Disabled, QPalette.Text)
     assert win.toggle_hidden() is False
     assert arch_rows() == ["..", "pub.txt"]
     assert win.toggle_hidden() is True

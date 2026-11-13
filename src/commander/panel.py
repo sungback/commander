@@ -12,7 +12,7 @@ from PySide6.QtCore import (
     Qt,
     Signal,
 )
-from PySide6.QtGui import QStandardItem, QStandardItemModel
+from PySide6.QtGui import QPalette, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QComboBox,
     QFileSystemModel,
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QStyledItemDelegate,
     QTabWidget,
     QTreeView,
     QVBoxLayout,
@@ -214,12 +215,29 @@ class _FilterEdit(QLineEdit):
             super().keyPressEvent(e)
 
 
+class _HiddenDelegate(QStyledItemDelegate):
+    def initStyleOption(self, option, index) -> None:
+        super().initStyleOption(option, index)
+        model = index.model()
+        first = index.siblingAtColumn(0)
+        if isinstance(model, _SortProxy):
+            name = model.fileName(first)
+            hidden = name != ".." and (name.startswith(".") or
+                                         model._src.fileInfo(model.mapToSource(first)).isHidden())
+        else:
+            name = first.data(Qt.DisplayRole) or ""
+            hidden = name != ".." and any(part.startswith(".") for part in name.split(os.sep))
+        if hidden:
+            option.palette.setColor(QPalette.Text, option.palette.color(QPalette.Disabled, QPalette.Text))
+
+
 class _View(QTreeView):
     """Tree view with Total Commander style keys: Enter/Backspace/Space/Insert."""
 
     def __init__(self, tab: "_Tab"):
         super().__init__()
         self._tab = tab
+        self.setItemDelegate(_HiddenDelegate(self))
         self.setDragDropMode(QTreeView.DragDrop)
         self.setDefaultDropAction(Qt.CopyAction)
         self.setDropIndicatorShown(False)

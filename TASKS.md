@@ -4,7 +4,7 @@
 상태: `[ ]` 대기 / `[~]` 진행 중 / `[x]` 완료
 
 ## 현재 상태 요약 (세션 복원용)
-- **버전**: `v0.3.11` (`pyproject.toml`, `src/commander/__init__.py`)
+- **버전**: `v0.3.12` (`pyproject.toml`, `src/commander/__init__.py`)
 - **원격 저장소**: https://github.com/sungback/commander (`origin/main`)
 - **릴리스**:
   - `v0.1.0`: macOS 초기 릴리스 (`commander.dmg`, `commander.zip` 수동 업로드 완료)
@@ -22,10 +22,11 @@
   - `v0.3.9`: Windows 업데이터 실행 프로세스 분리 완화 및 핸드셰이크 도입 — `CREATE_NO_WINDOW`, `CREATE_BREAKAWAY_FROM_JOB` 적용 및 `helper_started` 마커 동기화, 실패 시 사용자 에러 대화상자 표시
   - `v0.3.10`: Windows 자동 업데이트 동작 테스트용 타깃 릴리스 (v0.3.9 -> v0.3.10 업데이트 검증용)
   - `v0.3.11`: Windows 자동 업데이트 지연 해소 및 즉시 재실행 — `_internal` 및 exe 일괄 백업 이동, 프로세스 강제 종료 보장, robocopy 재시도 지연 제거 및 재실행 작업 디렉터리 명시
+  - `v0.3.12`: 활성 탭의 숨김 파일 표시 상태를 탐색 메뉴에 체크하고 숨김 항목을 흐리게 표시
 - **즉시 실행/검증 명령**:
   - `./scripts/check.sh` — `ruff` + `pytest` + 실제 홈 디렉터리 오프스크린 스모크/성능 체크
   - `./scripts/run.sh` — 소스 직접 실행 (`--app` 옵션 시 `/Applications/commander.app` 재빌드·설치·실행)
-- **최근 완료**: Windows 업데이터 DLL 공유 잠금 지연 해소 및 즉시 재실행 보장, 버전 `v0.3.11` 릴리스 태그 푸시
+- **최근 완료**: 숨김 파일 표시 메뉴 체크 및 숨김 항목 시각 구분, 버전 `v0.3.12` 릴리스 준비
 - **다음 예정 작업**: 릴리스 후 실기기 확인 권장 — 헤드리스 테스트로는 검증 못 한 것: 실제 마우스 드래그 앤 드롭, OS 휴지통 이동, Finder/탐색기·터미널 실행, 네이티브 다크 모드, 메뉴 막대 단축키, 패키징된 앱의 Qt 한국어 번역(`qtbase_ko.qm`) 포함 여부
 
 ## 로드맵 (Total Commander / ForkLift 수준)

@@ -173,12 +173,15 @@ class MainWindow(QMainWindow):
         for cmd in self.commands:
             act = QAction(cmd.label, self)
             act.setMenuRole(QAction.NoRole)
+            if cmd.id == "toggle_hidden":
+                act.setCheckable(True)
             act.triggered.connect(lambda _=False, c=cmd.id, h=handlers[cmd.id]: self._run_command(c, h))
             if cmd.menu not in self.menus:
                 self.menus[cmd.menu] = self.menuBar().addMenu(cmd.menu)
             self.menus[cmd.menu].addAction(act)
             self.addAction(act)  # keeps the shortcut alive even if the menu bar is hidden
             self.actions_by_name[cmd.id] = act
+        self.menus["탐색"].aboutToShow.connect(self._sync_hidden_action)
         self.tools_menu = self.menus["도구"]
         self._tool_actions: list[QAction] = []
         help_menu = self.menuBar().addMenu("도움말")
@@ -507,7 +510,13 @@ class MainWindow(QMainWindow):
             self.quick.show_message("")
 
     def toggle_hidden(self) -> bool:
-        return self.panels[self.active_index()].toggle_hidden()
+        shown = self.panels[self.active_index()].toggle_hidden()
+        self._sync_hidden_action()
+        return shown
+
+    def _sync_hidden_action(self) -> None:
+        self.actions_by_name["toggle_hidden"].setChecked(
+            self.panels[self.active_index()].show_hidden)
 
     def open_default(self, path: Path) -> None:
         """Open a local file with the application the OS associates with it."""
