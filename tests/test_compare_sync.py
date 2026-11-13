@@ -140,3 +140,48 @@ def test_side_by_side_alignment():
     assert compare.side_by_side([], []) == []
     rows = compare.side_by_side(["x", "y", "z"], ["z"])
     assert [(r.left, r.right) for r in rows] == [("x", None), ("y", None), ("z", "z")]
+
+
+def test_scan_aborts_when_directory_cannot_be_read(pair, monkeypatch):
+    left, right = pair
+    real_scandir = os.scandir
+
+    def scandir(path):
+        if path == left / "sub":
+            raise PermissionError("unreadable directory")
+        return real_scandir(path)
+
+    monkeypatch.setattr(sync.os, "scandir", scandir)
+    with pytest.raises(PermissionError, match="unreadable directory"):
+        sync.scan(left, right, mode="to_right", delete_extra=True)
+
+
+def test_scan_aborts_when_entry_stat_fails(pair, monkeypatch):
+    left, right = pair
+    real_scandir = os.scandir
+
+    class BrokenEntry:
+        name = "same.txt"
+
+        def is_symlink(self):
+            return False
+
+        def is_dir(self, **_kwargs):
+            return False
+
+        def is_file(self, **_kwargs):
+            return True
+
+        def stat(self, **_kwargs):
+            raise OSError("stat failed")
+
+    class BrokenScan:
+        def __enter__(self):
+            return iter([BrokenEntry()])
+
+        def __exit__(self, *_args):
+            pass
+
+    monkeypatch.setattr(sync.os, "scandir", lambda p: BrokenScan() if p == left else real_scandir(p))
+    with pytest.raises(OSError, match="stat failed"):
+        sync.scan(left, right, mode="to_right", delete_extra=True)

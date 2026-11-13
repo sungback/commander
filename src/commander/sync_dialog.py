@@ -128,6 +128,10 @@ class SyncDialog(QDialog):
     def start_scan(self) -> None:
         if self._scan is not None:
             return
+        self.items = []
+        self.plan = []
+        self._unchecked.clear()
+        self.tree.clear()
         self.compare_btn.setEnabled(False)
         self.sync_btn.setEnabled(False)
         self.summary.setText("비교 중...")

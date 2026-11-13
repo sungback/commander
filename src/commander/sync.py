@@ -1,5 +1,6 @@
 """Folder synchronization: build a reviewable plan, then apply it (UI-independent)."""
 import os
+import stat
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,21 +38,15 @@ def check_roots(left: Path, right: Path) -> None:
 
 def _listing(folder: Path, include_hidden: bool) -> dict[str, Info]:
     out: dict[str, Info] = {}
-    try:
-        with os.scandir(folder) as it:
-            for e in it:
-                if e.is_symlink() or (not include_hidden and e.name.startswith(".")):
-                    continue
-                try:
-                    is_dir = e.is_dir(follow_symlinks=False)
-                    if not is_dir and not e.is_file(follow_symlinks=False):
-                        continue  # sockets, FIFOs, devices
-                    st = e.stat(follow_symlinks=False)
-                except OSError:
-                    continue
-                out[e.name] = Info(is_dir, 0 if is_dir else st.st_size, st.st_mtime)
-    except OSError:
-        pass
+    with os.scandir(folder) as it:
+        for e in it:
+            if not include_hidden and e.name.startswith("."):
+                continue
+            st = e.stat(follow_symlinks=False)
+            is_dir = stat.S_ISDIR(st.st_mode)
+            if not is_dir and not stat.S_ISREG(st.st_mode):
+                continue  # symlinks, sockets, FIFOs, devices
+            out[e.name] = Info(is_dir, 0 if is_dir else st.st_size, st.st_mtime)
     return out
 
 

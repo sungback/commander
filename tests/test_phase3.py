@@ -277,3 +277,29 @@ def test_pack_selection_into_other_panel(tmp_path, monkeypatch):
     assert not win.busy() and (b / "bundle.tar.gz").stat().st_mtime_ns == before
     win.panels[1].set_path(str(b / "bundle.tar.gz"))
     assert win.panels[1].in_archive
+
+
+def test_sync_failed_rescan_cannot_reuse_previous_plan(tmp_path, monkeypatch):
+    from commander import sync
+    from commander.sync_dialog import SyncDialog
+
+    win, left, right = _win(tmp_path, monkeypatch)
+    _sync_tree(left, right)
+    dlg = SyncDialog(left, right, parent=win)
+    dlg.start_scan()
+    _wait(lambda: dlg._scan is None and dlg.items)
+    assert dlg.sync_btn.isEnabled()
+
+    def fail_scan(**_kwargs):
+        raise PermissionError("scan denied")
+
+    monkeypatch.setattr(sync, "scan", fail_scan)
+    dlg.start_scan()
+    dlg.show_equal.setChecked(True)
+    assert not dlg.sync_btn.isEnabled()
+    _wait(lambda: dlg._scan is None)
+    assert "PermissionError: scan denied" in dlg.summary.text()
+    assert not dlg.sync_btn.isEnabled()
+    assert dlg.checked_items() == []
+    assert dlg.plan == []
+    dlg.close()
