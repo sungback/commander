@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QStyledItemDelegate,
     QTabWidget,
+    QToolButton,
     QTreeView,
     QVBoxLayout,
     QWidget,
@@ -935,6 +936,11 @@ class FilePanel(QWidget):
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         self.tabs.setTabsClosable(True)
+        self.favorites_button = QToolButton()
+        self.favorites_button.setText("+")
+        self.favorites_button.setToolTip("자주 가는 폴더 추가 및 관리")
+        self.favorites_button.setAccessibleName("자주 가는 폴더 추가 및 관리")
+        self.tabs.setCornerWidget(self.favorites_button, Qt.TopRightCorner)
         self.tabs.tabCloseRequested.connect(self.close_tab)
         self.tabs.currentChanged.connect(lambda _: self.current_changed.emit())
         self._hidden_columns: set[int] = set()

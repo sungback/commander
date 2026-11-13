@@ -252,6 +252,36 @@ def test_favorites_menu_and_persistence(tmp_path, monkeypatch):
     assert not win._favorites_menu().actions()[-1].isEnabled()
 
 
+def test_folder_shortcuts_button_add_go_remove_and_restore(tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QApplication, QFileDialog
+
+    app = QApplication.instance() or QApplication([])
+    d = _nav_tree(tmp_path)
+    state = tmp_path / "state.json"
+    win = MainWindow(state_file=state)
+    left, right = win.panels
+    left.set_path(str(d))
+    right.set_path(str(d / "docs"))
+    assert left.favorites_button.text() == right.favorites_button.text() == "+"
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *_: str(d))
+    win._folder_shortcuts_menu(right).actions()[0].trigger()
+    assert win.favorites == [str(d)]
+    win.active_index = lambda: 0
+    win._folder_shortcuts_menu(right).actions()[2].trigger()
+    assert right.current_path() == str(d)
+    assert left.current_path() == str(d)
+
+    restored = MainWindow(state_file=state)
+    assert restored.favorites == [str(d)]
+    remove = win._folder_shortcuts_menu(left).actions()[-1].menu()
+    remove.actions()[0].trigger()
+    assert win.favorites == []
+    assert MainWindow(state_file=state).favorites == []
+    win.close()
+    restored.close()
+    app.processEvents()
+
+
 def test_select_by_pattern_and_invert(tmp_path, monkeypatch):
     from PySide6.QtCore import Qt
     from PySide6.QtTest import QTest
