@@ -23,10 +23,131 @@ def is_archive(path: Path) -> bool:
     return path.name.lower().endswith(SUFFIXES) and path.is_file()
 
 
+def _is_hangul(ch: str) -> bool:
+    code = ord(ch)
+    return (
+        0xAC00 <= code <= 0xD7A3  # 완성형 한글 음절 (가~힣)
+        or 0x1100 <= code <= 0x11FF  # 한글 자모
+        or 0x3130 <= code <= 0x318F  # 한글 호환 자모
+    )
+
+
+def _has_hangul(s: str) -> bool:
+    return any(_is_hangul(c) for c in s)
+
+
+def _detect_zip_encoding(zf: zipfile.ZipFile) -> str | None:
+    """Detect whether non-flagged entries in `zf` are encoded in CP949 or UTF-8.
+
+    Returns 'cp949', 'utf-8', or None if no non-ASCII non-flagged entries or undetermined.
+    """
+    raw_list: list[bytes] = []
+    for info in zf.infolist():
+        if info.flag_bits & 0x800:
+            continue
+        try:
+            raw = info.filename.encode("cp437")
+        except UnicodeEncodeError:
+            continue
+        if not raw.isascii():
+            raw_list.append(raw)
+
+    if not raw_list:
+        return None
+
+    has_invalid_utf8 = False
+    all_valid_cp949 = True
+    for raw in raw_list:
+        try:
+            raw.decode("utf-8")
+        except UnicodeDecodeError:
+            has_invalid_utf8 = True
+
+        try:
+            raw.decode("cp949")
+        except UnicodeDecodeError:
+            all_valid_cp949 = False
+
+    # If any entry is invalid UTF-8 and all are valid CP949, it's definitively CP949.
+    if has_invalid_utf8 and all_valid_cp949:
+        return "cp949"
+
+    # If all entries are valid UTF-8, check if decoding as UTF-8 gives Korean characters.
+    if not has_invalid_utf8:
+        for raw in raw_list:
+            try:
+                if _has_hangul(raw.decode("utf-8")):
+                    return "utf-8"
+            except UnicodeDecodeError:
+                pass
+
+    # If all entries are valid CP949, check if decoding as CP949 gives Korean characters.
+    if all_valid_cp949:
+        for raw in raw_list:
+            try:
+                if _has_hangul(raw.decode("cp949")):
+                    return "cp949"
+            except UnicodeDecodeError:
+                pass
+
+    return None
+
+
+def _decode_entry_filename(name: str, flag_bits: int, encoding: str | None) -> str:
+    """Decode a zip entry filename using the detected encoding or heuristics."""
+    if flag_bits & 0x800:
+        return name
+    try:
+        raw = name.encode("cp437")
+    except UnicodeEncodeError:
+        return name
+    if raw.isascii():
+        return name
+
+    if encoding:
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            pass
+
+    utf8_str: str | None = None
+    try:
+        utf8_str = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+
+    cp949_str: str | None = None
+    try:
+        cp949_str = raw.decode("cp949")
+    except UnicodeDecodeError:
+        pass
+
+    if utf8_str is not None and cp949_str is not None:
+        if not _has_hangul(utf8_str) and _has_hangul(cp949_str):
+            return cp949_str
+        return utf8_str
+    if cp949_str is not None:
+        return cp949_str
+    if utf8_str is not None:
+        return utf8_str
+    return name
+
+
+def _normalize_zip_filenames(zf: zipfile.ZipFile) -> None:
+    enc = _detect_zip_encoding(zf)
+    for info in zf.infolist():
+        new_name = _decode_entry_filename(info.filename, info.flag_bits, enc)
+        if new_name != info.filename:
+            info.filename = new_name
+            zf.NameToInfo[new_name] = info
+
+
 def _open(path: Path):
     try:
         if path.name.lower().endswith(".zip"):
-            return zipfile.ZipFile(path)
+            zf = zipfile.ZipFile(path)
+            _normalize_zip_filenames(zf)
+            return zf
         return tarfile.open(path)
     except (zipfile.BadZipFile, tarfile.TarError) as e:
         raise ValueError(f"cannot read archive {path.name}: {e}") from e

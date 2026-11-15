@@ -234,3 +234,65 @@ def test_create_preserves_existing_part_file(tmp_path, monkeypatch, name, outcom
         assert dst.read_text() == "old archive"
     assert sibling.read_text() == "valuable sibling"
     assert sorted(p.name for p in tmp_path.iterdir()) == sorted(["src", name, sibling.name])
+
+
+class _RawZipInfo(zipfile.ZipInfo):
+    def __init__(self, raw_bytes: bytes, flag_bits: int = 0):
+        super().__init__(raw_bytes.decode("cp437", errors="replace"))
+        self._raw_bytes = raw_bytes
+        self._custom_flags = flag_bits
+
+    def _encodeFilenameFlags(self):
+        return self._raw_bytes, self._custom_flags
+
+
+def test_cp949_zip_read_and_extract(tmp_path):
+    zip_path = tmp_path / "korean_cp949.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr(_RawZipInfo("문서_테스트.txt".encode("cp949"), 0), b"content 1")
+        zf.writestr(_RawZipInfo("자료실/내부_파일.txt".encode("cp949"), 0), b"content 2")
+
+    entries = archive.read_entries(zip_path)
+    entry_paths = {e.path for e in entries}
+    assert "문서_테스트.txt" in entry_paths
+    assert "자료실/내부_파일.txt" in entry_paths
+
+    children = archive.children(entries)
+    assert [(c.path, c.is_dir) for c in children] == [("자료실", True), ("문서_테스트.txt", False)]
+
+    dst = tmp_path / "extracted"
+    dst.mkdir()
+    archive.extract(zip_path, ["문서_테스트.txt", "자료실"], dst)
+    assert (dst / "문서_테스트.txt").read_bytes() == b"content 1"
+    assert (dst / "자료실" / "내부_파일.txt").read_bytes() == b"content 2"
+
+
+def test_utf8_without_flag_zip_read_and_extract(tmp_path):
+    zip_path = tmp_path / "korean_utf8_noflag.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr(_RawZipInfo("보고서.txt".encode(), 0), b"utf8 content")
+
+    entries = archive.read_entries(zip_path)
+    assert [e.path for e in entries] == ["보고서.txt"]
+
+    dst = tmp_path / "extracted_utf8"
+    dst.mkdir()
+    archive.extract(zip_path, ["보고서.txt"], dst)
+    assert (dst / "보고서.txt").read_bytes() == b"utf8 content"
+
+
+def test_cp949_collision_char_zip(tmp_path):
+    # '짜' in CP949 is \xc2\xa5 which could be misinterpreted as UTF-8 currency symbol '¥'
+    zip_path = tmp_path / "collision.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr(_RawZipInfo("짜.txt".encode("cp949"), 0), b"jja")
+        zf.writestr(_RawZipInfo("설명서.txt".encode("cp949"), 0), b"manual")
+
+    entries = archive.read_entries(zip_path)
+    assert {e.path for e in entries} == {"짜.txt", "설명서.txt"}
+
+    dst = tmp_path / "extracted_collision"
+    dst.mkdir()
+    archive.extract(zip_path, ["짜.txt"], dst)
+    assert (dst / "짜.txt").read_bytes() == b"jja"
+
