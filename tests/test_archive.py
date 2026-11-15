@@ -197,3 +197,40 @@ def test_create_skips_symlinks(tmp_path):
     archive.create(tmp_path / "o.zip", [src])
     names = {e.path for e in archive.read_entries(tmp_path / "o.zip")}
     assert "src/d/b.bin" in names and not any("link" in n for n in names)
+
+
+@pytest.mark.parametrize("name", ["out.zip", "out.tar.gz"])
+@pytest.mark.parametrize("outcome", ["success", "failure", "cancel"])
+def test_create_preserves_existing_part_file(tmp_path, monkeypatch, name, outcome):
+    from commander.transfer import Cancelled, Control
+
+    src = _pack_tree(tmp_path)
+    dst = tmp_path / name
+    dst.write_text("old archive")
+    sibling = tmp_path / (name + ".commander-part")
+    sibling.write_text("valuable sibling")
+    control = Control()
+    if outcome == "failure":
+        def fail_replace(*_args):
+            raise OSError("replace failed")
+        monkeypatch.setattr(archive.os, "replace", fail_replace)
+    elif outcome == "cancel":
+        real_checkpoint = control.checkpoint
+        calls = 0
+
+        def checkpoint():
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                control.cancel()
+            real_checkpoint()
+        control.checkpoint = checkpoint
+    if outcome == "success":
+        archive.create(dst, [src / "a.txt"], overwrite=True, control=control)
+        assert archive.read_entries(dst)
+    else:
+        with pytest.raises(OSError if outcome == "failure" else Cancelled):
+            archive.create(dst, [src / "a.txt"], overwrite=True, control=control)
+        assert dst.read_text() == "old archive"
+    assert sibling.read_text() == "valuable sibling"
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(["src", name, sibling.name])

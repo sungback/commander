@@ -2,9 +2,10 @@
 import os
 import shutil
 import stat
+import tempfile
 import threading
 from collections.abc import Iterable
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,6 +13,19 @@ from . import ops
 
 CHUNK = 1 << 20
 PART_SUFFIX = ".commander-part"
+
+
+@contextmanager
+def _temporary_sibling(dst: Path):
+    """Create and own a unique temporary file on the destination filesystem."""
+    fd, name = tempfile.mkstemp(prefix=".commander-", suffix=PART_SUFFIX, dir=dst.parent)
+    part = Path(name)
+    try:
+        with os.fdopen(fd, "w+b") as file:
+            yield part, file
+    finally:
+        with suppress(OSError):
+            part.unlink()
 
 
 class Cancelled(Exception):
@@ -254,13 +268,13 @@ class _Run:
             return
         if not stat.S_ISREG(st.st_mode):
             raise OSError(f"unsupported file type: {src}")
-        part = dst.with_name(dst.name + PART_SUFFIX)
-        try:
-            with open(src, "rb") as fin, open(part, "wb") as fout:
+        with _temporary_sibling(dst) as (part, fout):
+            with open(src, "rb") as fin:
                 while chunk := fin.read(CHUNK):
                     fout.write(chunk)
                     self.stats.done_bytes += len(chunk)
                     self.control.checkpoint()
+            fout.close()  # Windows cannot replace an open file.
             shutil.copystat(src, part, follow_symlinks=False)
             try:
                 os.replace(part, dst)
@@ -268,7 +282,3 @@ class _Run:
                 with suppress(OSError):
                     os.chmod(dst, stat.S_IWRITE)
                 os.replace(part, dst)
-        except BaseException:
-            with suppress(OSError):
-                part.unlink()
-            raise

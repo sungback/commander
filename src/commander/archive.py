@@ -4,7 +4,6 @@ import shutil
 import tarfile
 import zipfile
 from collections.abc import Iterable
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -174,7 +173,7 @@ def create(dst: Path, srcs: Iterable[Path], overwrite: bool = False, stats=None,
     or failed run leaves nothing behind. With `on_error`, unreadable files are reported and
     skipped.
     """
-    from .transfer import CHUNK, PART_SUFFIX, measure
+    from .transfer import CHUNK, _temporary_sibling, measure
 
     dst = Path(dst)
     srcs = [Path(s) for s in srcs]
@@ -194,14 +193,13 @@ def create(dst: Path, srcs: Iterable[Path], overwrite: bool = False, stats=None,
         stats.scanning = True
         stats.total_bytes, stats.total_items = measure(srcs, control)
         stats.scanning = False
-    part = dst.with_name(dst.name + PART_SUFFIX)
     is_zip = lower.endswith(".zip")
-    try:
+    with _temporary_sibling(dst) as (part, temp):
         if is_zip:
-            out = zipfile.ZipFile(part, "w", zipfile.ZIP_DEFLATED)
+            out = zipfile.ZipFile(temp, "w", zipfile.ZIP_DEFLATED)
         else:
             mode = next(m for s, m in _TAR_MODES.items() if lower.endswith(s))
-            out = tarfile.open(part, mode)  # noqa: SIM115 - closed by the with block below
+            out = tarfile.open(fileobj=temp, mode=mode)  # noqa: SIM115
         with out:
             for path, name, is_dir in _members(srcs):
                 if control:
@@ -232,9 +230,6 @@ def create(dst: Path, srcs: Iterable[Path], overwrite: bool = False, stats=None,
                     continue
                 if stats and not is_dir:
                     stats.done_items += 1
+        temp.close()  # Windows cannot replace an open file.
         os.replace(part, dst)
-    except BaseException:
-        with suppress(OSError):
-            part.unlink()
-        raise
     ops.invalidate_size_cache(dst)

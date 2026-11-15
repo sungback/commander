@@ -183,3 +183,49 @@ def test_transfer_overwrites_readonly_destination(tree):
     transfer.transfer([src / "a.txt"], dst, on_conflict=lambda _s, _d: "overwrite")
     assert dst_file.read_text() == "aaa"
 
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure", "cancel"])
+def test_copy_preserves_existing_part_file(tree, monkeypatch, outcome):
+    src, dst = tree
+    original = dst / "a.txt"
+    original.write_text("old destination")
+    sibling = dst / "a.txt.commander-part"
+    sibling.write_text("valuable sibling")
+    control = Control()
+    if outcome == "failure":
+        def fail_replace(*_args):
+            raise OSError("replace failed")
+        monkeypatch.setattr(transfer.os, "replace", fail_replace)
+    elif outcome == "cancel":
+        real_checkpoint = control.checkpoint
+        calls = 0
+
+        def checkpoint():
+            nonlocal calls
+            calls += 1
+            if calls == 4:
+                control.cancel()
+            real_checkpoint()
+        control.checkpoint = checkpoint
+    if outcome == "success":
+        transfer.transfer([src / "a.txt"], dst, on_conflict=lambda *_: "overwrite", control=control)
+        assert original.read_text() == "aaa"
+    else:
+        with pytest.raises(OSError if outcome == "failure" else Cancelled):
+            transfer.transfer([src / "a.txt"], dst, on_conflict=lambda *_: "overwrite", control=control)
+        assert original.read_text() == "old destination"
+    assert sibling.read_text() == "valuable sibling"
+    assert sorted(p.name for p in dst.iterdir()) == ["a.txt", "a.txt.commander-part"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs POSIX symlinks")
+def test_copy_does_not_follow_existing_part_symlink(tree, tmp_path):
+    src, dst = tree
+    valuable = tmp_path / "valuable"
+    valuable.write_text("untouched")
+    sibling = dst / "a.txt.commander-part"
+    sibling.symlink_to(valuable)
+    transfer.transfer([src / "a.txt"], dst)
+    assert (dst / "a.txt").read_text() == "aaa"
+    assert sibling.is_symlink() and valuable.read_text() == "untouched"
