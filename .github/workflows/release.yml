@@ -92,7 +92,7 @@ jobs:
           HELPER=$(find dist/commander.app -type f -name commander-dir-size -print -quit)
           test -n "$HELPER"
           codesign --verify --strict "$HELPER"
-          codesign -dv "$HELPER" 2>&1 | grep 'Authority=Developer ID Application:'
+          codesign -dv --verbose=4 "$HELPER" 2>&1 | grep 'Authority=Developer ID Application:'
           TEST_DIR=$(mktemp -d)
           printf 'abc' > "$TEST_DIR/file"
           "$HELPER" "$TEST_DIR" | grep '"bytes":3,"complete":true'
