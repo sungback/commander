@@ -86,6 +86,7 @@ jobs:
       - name: Verify macOS release signature
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
+          set -x
           codesign --verify --deep --strict --verbose=2 dist/commander.app
           codesign -dv --verbose=4 dist/commander.app 2>&1 | grep 'Authority=Developer ID Application:'
           HELPER=$(find dist/commander.app -type f -name commander-dir-size -print -quit)
