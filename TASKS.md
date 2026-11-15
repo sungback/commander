@@ -4,7 +4,7 @@
 상태: `[ ]` 대기 / `[~]` 진행 중 / `[x]` 완료
 
 ## 현재 상태 요약 (세션 복원용)
-- **버전**: `v0.3.25` (`pyproject.toml`, `src/commander/__init__.py`)
+- **버전**: `v0.3.26` (`pyproject.toml`, `src/commander/__init__.py`)
 - **원격 저장소**: https://github.com/sungback/commander (`origin/main`)
 - **릴리스**:
   - `v0.1.0`: macOS 초기 릴리스 (`commander.dmg`, `commander.zip` 수동 업로드 완료)
@@ -34,12 +34,11 @@
   - `v0.3.21`: macOS 릴리스에 Developer ID 서명과 검증을 적용해 업데이트 간 앱 식별 유지
   - `v0.3.22`: macOS 큰 폴더 전체 계산에 fts 네이티브 헬퍼 적용으로 스캔 지연 단축
   - `v0.3.23`: F4 텍스트 에디터에서 저장되지 않은 변경 사항이 있을 때 닫기 전 저장 확인 대화상자 표시 및 타이틀바 수정 상태(`*`) 표시
-  - `v0.3.24`: macOS 패키징 시 native 헬퍼(`commander-dir-size`) 개별 codesign 및 앱 번들 딥 서명 보강
-  - `v0.3.25`: macOS 릴리스 검증 시 헬퍼 서명 상세 출력 옵션(`--verbose=4`) 추가로 CI 검증 오류 수정
+  - `v0.3.26`: CI 릴리스 워크플로 codesign 상세 플래그(`--verbose=4`) 반영으로 macOS 검증 완성
 - **즉시 실행/검증 명령**:
   - `./scripts/check.sh` — `ruff` + `pytest` + 실제 홈 디렉터리 오프스크린 스모크/성능 체크
   - `./scripts/run.sh` — 소스 직접 실행 (`--app` 옵션 시 `/Applications/commander.app` 재빌드·설치·실행)
-- **최근 완료**: F4 에디터 저장 미확인 닫기 방지 및 macOS 릴리스 검증 완성, 버전 `v0.3.25` 릴리스 준비
+- **최근 완료**: F4 에디터 저장 미확인 닫기 방지 및 릴리스 서명 검증 수정, 버전 `v0.3.26` 릴리스 준비
 - **다음 예정 작업**: 릴리스 후 실기기 확인 권장 — 헤드리스 테스트로는 검증 못 한 것: 실제 마우스 드래그 앤 드롭, OS 휴지통 이동, Finder/탐색기·터미널 실행, 네이티브 다크 모드, 메뉴 막대 단축키, 패키징된 앱의 Qt 한국어 번역(`qtbase_ko.qm`) 포함 여부
 
 ## v0.3.22 폴더 용량 계산

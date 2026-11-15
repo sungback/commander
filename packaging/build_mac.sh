@@ -6,9 +6,6 @@ rm -rf build/Commander.iconset build/Commander.icns
 mkdir -p build/Commander.iconset
 SIGN_ID="${CODESIGN_IDENTITY:-$(security find-identity -v -p codesigning | sed -n 's/.*"\(Apple Development:[^"]*\)".*/\1/p' | head -n 1)}"
 clang -O2 -Wall -Wextra -Werror packaging/dir_size.c -o build/commander-dir-size
-if [ -n "$SIGN_ID" ]; then
-  codesign --force --timestamp --options runtime --sign "$SIGN_ID" build/commander-dir-size
-fi
 QT_QPA_PLATFORM=offscreen python3 - <<'EOF'
 from PySide6.QtWidgets import QApplication
 from commander.app import app_icon
@@ -28,10 +25,6 @@ pyinstaller --noconfirm --windowed --name commander \
   --exclude-module PySide6.Qt3DCore --exclude-module PySide6.QtQuick \
   ${KO_QM:+--add-data "$KO_QM:translations"} \
   packaging/launcher.py
-if [ -n "$SIGN_ID" ]; then
-  find dist/commander.app -type f -name commander-dir-size -exec codesign --force --timestamp --options runtime --sign "$SIGN_ID" {} +
-  codesign --force --timestamp --options runtime --deep --sign "$SIGN_ID" dist/commander.app
-fi
 ditto -c -k --keepParent dist/commander.app dist/commander.zip
 rm -rf dist/dmg && mkdir dist/dmg && cp -R dist/commander.app dist/dmg/
 ln -s /Applications dist/dmg/Applications
