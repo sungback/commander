@@ -4,6 +4,7 @@ set -e
 cd "$(dirname "$0")/.."
 rm -rf build/Commander.iconset build/Commander.icns
 mkdir -p build/Commander.iconset
+clang -O2 -Wall -Wextra -Werror packaging/dir_size.c -o build/commander-dir-size
 QT_QPA_PLATFORM=offscreen python3 - <<'EOF'
 from PySide6.QtWidgets import QApplication
 from commander.app import app_icon
@@ -18,6 +19,7 @@ SIGN_ID="${CODESIGN_IDENTITY:-$(security find-identity -v -p codesigning | sed -
 pyinstaller --noconfirm --windowed --name commander \
   --icon build/Commander.icns \
   --osx-bundle-identifier com.sungback.commander \
+  --add-binary "build/commander-dir-size:." \
   ${SIGN_ID:+--codesign-identity "$SIGN_ID"} \
   --paths src --exclude-module PySide6.QtWebEngineCore --exclude-module PySide6.QtQml \
   --exclude-module PySide6.Qt3DCore --exclude-module PySide6.QtQuick \

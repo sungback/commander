@@ -209,12 +209,15 @@ class DirSizeWorker(QThread):
             if self._cancel:
                 return
             path = str(e)
-            size, done = ops.dir_size(
-                e,
-                cancel=lambda: self._cancel,
-                on_progress=lambda s, p=path: self.sized.emit(p, s) if not self._cancel else None,
-            )
+            from . import native_size
+
+            progress = lambda s, p=path: self.sized.emit(p, s) if not self._cancel else None
+            result = native_size.calculate(e, cancel=lambda: self._cancel, on_progress=progress)
+            if result is None:
+                result = ops.dir_size(e, cancel=lambda: self._cancel, on_progress=progress)
+            size, done = result
             if not self._cancel and done:
+                ops.set_cached_size(path, size)
                 self.sized.emit(path, size)
 
 

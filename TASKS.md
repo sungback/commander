@@ -4,7 +4,7 @@
 상태: `[ ]` 대기 / `[~]` 진행 중 / `[x]` 완료
 
 ## 현재 상태 요약 (세션 복원용)
-- **버전**: `v0.3.21` (`pyproject.toml`, `src/commander/__init__.py`)
+- **버전**: `v0.3.22` (`pyproject.toml`, `src/commander/__init__.py`)
 - **원격 저장소**: https://github.com/sungback/commander (`origin/main`)
 - **릴리스**:
   - `v0.1.0`: macOS 초기 릴리스 (`commander.dmg`, `commander.zip` 수동 업로드 완료)
@@ -37,6 +37,11 @@
   - `./scripts/run.sh` — 소스 직접 실행 (`--app` 옵션 시 `/Applications/commander.app` 재빌드·설치·실행)
 - **최근 완료**: macOS 릴리스 Developer ID 서명 설정, 버전 `v0.3.21` 릴리스 준비
 - **다음 예정 작업**: 릴리스 후 실기기 확인 권장 — 헤드리스 테스트로는 검증 못 한 것: 실제 마우스 드래그 앤 드롭, OS 휴지통 이동, Finder/탐색기·터미널 실행, 네이티브 다크 모드, 메뉴 막대 단축키, 패키징된 앱의 Qt 한국어 번역(`qtbase_ko.qm`) 포함 여부
+
+## v0.3.22 폴더 용량 계산
+- macOS 큰 폴더 전체 계산에 fts 네이티브 헬퍼 적용. 논리적 크기 및 하드링크 경로별 합산 유지.
+- 취소 시 헬퍼 종료, 실패/미지원 환경은 기존 Python 계산으로 복귀. 네이티브 완료 결과는 루트 캐시에 저장하며 하위 폴더 캐시는 생성하지 않음.
+- macOS 패키징에서 헬퍼 컴파일 및 PyInstaller 바이너리 포함·서명.
 
 ## 로드맵 (Total Commander / ForkLift 수준)
 사용자 확정: 1 → 2 → 3 → 4 → 5 순서로 끝까지 진행. **원격(FTP/SFTP) 보강(6단계)은 만들지 않는다.**
