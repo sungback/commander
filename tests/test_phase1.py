@@ -226,6 +226,44 @@ def test_history_back_and_forward(tmp_path):
     assert p.go_forward() and p.current_path() == str(other)
 
 
+def test_navigation_clears_selection_and_places_cursor(tmp_path, monkeypatch):
+    from PySide6.QtCore import QItemSelectionModel
+
+    win, a, _b = _win(tmp_path, monkeypatch)
+    p = win.panels[0]
+    (a / "sub").mkdir()
+    (a / "sub" / "one.txt").write_text("1")
+    _wait(lambda: "sub" in _names(p))
+
+    # Select an item in folder a
+    sm = p.view.selectionModel()
+    m = p.model
+    root = p.view.rootIndex()
+    for r in range(m.rowCount(root)):
+        idx = m.index(r, 0, root)
+        if idx.data() != "..":
+            sm.select(idx, QItemSelectionModel.Select | QItemSelectionModel.Rows)
+            break
+    assert len(p.selected_paths()) == 1
+
+    # Navigate into subfolder "sub"
+    p.set_path(str(a / "sub"))
+    _wait(lambda: "one.txt" in _names(p))
+
+    # Previous selection is cleared, and cursor/selection is on ".."
+    assert p.selected_paths() == []
+    assert p.view.currentIndex().data() == ".."
+    assert [i.data() for i in p.view.selectionModel().selectedRows(0)] == [".."]
+
+    # Now go_up() back to a: cursor and selection should land on "sub"
+    p._tab.go_up()
+    _wait(lambda: "sub" in _names(p))
+    assert p.current_path() == str(a)
+    assert p.view.currentIndex().data() == "sub"
+    assert p.selected_paths() == [a / "sub"]
+    assert [i.data() for i in p.view.selectionModel().selectedRows(0)] == ["sub"]
+
+
 def test_favorites_menu_and_persistence(tmp_path, monkeypatch):
     d = _nav_tree(tmp_path)
     state = tmp_path / "state.json"

@@ -383,7 +383,7 @@ class _Tab(QWidget):
         self._search_params: tuple[list[Path], str, Path] | None = None
         self.hidden_columns: set[int] = set()  # column indexes hidden by the user's settings
         self._size_worker: DirSizeWorker | None = None
-        self._pending_cur: str | None = None
+        self._pending_cur: str | None = ".."
         self._pending_sel: set[str] = set()
         self._history: list[str] = [path]
         self._hist_pos = 0
@@ -403,10 +403,11 @@ class _Tab(QWidget):
         self.view.doubleClicked.connect(self._open)
 
         self.status_bar = QLabel()
-        self._fs_model.directoryLoaded.connect(lambda _: self.update_status())
+        self._fs_model.directoryLoaded.connect(lambda _: (self._apply_pending_selection(), self.update_status()))
         self.model.rowsInserted.connect(self._on_rows_changed)
         self.model.rowsRemoved.connect(self._on_rows_changed)
         self._bind_selection()
+        self._apply_pending_selection()
         self._scan_dir_sizes()
         self.update_status()
 
@@ -527,7 +528,7 @@ class _Tab(QWidget):
             pos += step
         return False
 
-    def set_path(self, path: str, record: bool = True) -> None:
+    def set_path(self, path: str, record: bool = True, target_cursor: str | None = None) -> None:
         p = Path(path)
         if archive.is_archive(p):
             try:
@@ -541,7 +542,10 @@ class _Tab(QWidget):
         if not idx.isValid():
             idx = self.model.index(path)
         if idx.isValid():
-            self._pending_cur = None
+            sel_model = self.view.selectionModel()
+            if sel_model is not None:
+                sel_model.clear()
+            self._pending_cur = target_cursor or ".."
             self._pending_sel.clear()
             self._leave_archive()
             self._reset_filter()
@@ -552,6 +556,7 @@ class _Tab(QWidget):
             self.path_bar.setText(self.local_dir)
             self._sync_drive_box()
             self._scan_dir_sizes()
+            self._apply_pending_selection()
             self.update_status()
             if self.path_changed:
                 self.path_changed(self.local_dir)
@@ -671,6 +676,12 @@ class _Tab(QWidget):
         self._bind_selection()
         self._apply_columns()
         self.path_bar.setText(bar)
+        if self._pending_cur:
+            self._apply_pending_selection()
+        elif m.rowCount() > 0:
+            idx0 = m.index(0, 0)
+            self.view.selectionModel().setCurrentIndex(
+                idx0, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
         self.update_status()
         if self.path_changed:
             self.path_changed(title)
@@ -737,7 +748,9 @@ class _Tab(QWidget):
                 sel_model.select(idx, flags)
                 self._pending_sel.discard(name)
             if self._pending_cur and name == self._pending_cur:
-                sel_model.setCurrentIndex(idx, QItemSelectionModel.NoUpdate)
+                cur_flags = QItemSelectionModel.NoUpdate if self._pending_sel else (QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+                sel_model.setCurrentIndex(idx, cur_flags)
+                self.view.scrollTo(idx)
                 self._pending_cur = None
 
     def to_state(self) -> dict:
@@ -892,15 +905,26 @@ class _Tab(QWidget):
     def go_up(self) -> None:
         if self.remote is not None:
             if self.remote_path != "/":
+                prev = posixpath.basename(self.remote_path.rstrip("/"))
+                self._pending_cur = prev
                 self.open_remote(self.remote, posixpath.dirname(self.remote_path.rstrip("/")) or "/")
         elif self.flat:
             self.set_path(self.local_dir)  # '..' / Backspace leaves the flat view
         elif self.archive is None:
-            self.set_path(str(Path(self.current_path()).parent))
+            cur = Path(self.current_path())
+            parent = cur.parent
+            if parent != cur:
+                self.set_path(str(parent), target_cursor=cur.name)
+            else:
+                self.set_path(str(parent))
         elif self.inner:
+            prev = self.inner.rsplit("/", 1)[-1]
+            self._pending_cur = prev
             self.open_archive(self.archive, self.inner.rpartition("/")[0])
         else:
-            self.set_path(str(self.archive.parent))
+            prev = self.archive.name
+            self._pending_cur = prev
+            self.set_path(str(self.archive.parent), target_cursor=prev)
 
     def current_path(self) -> str:
         """Current folder; inside an archive its folder, while on a remote the last local folder."""
@@ -1101,8 +1125,8 @@ class FilePanel(QWidget):
         tab.deleteLater()
         self.tabs.removeTab(index)
 
-    def set_path(self, path: str) -> None:
-        self._tab.set_path(path)
+    def set_path(self, path: str, target_cursor: str | None = None) -> None:
+        self._tab.set_path(path, target_cursor=target_cursor)
 
     def go_back(self) -> bool:
         return self._tab.go_history(-1)
