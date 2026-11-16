@@ -664,22 +664,54 @@ class MainWindow(QMainWindow):
                        lambda progress: fn(srcs, dst, overwrite=overwrite, progress=progress),
                        on_done=refresh)
 
+    @staticmethod
+    def _same_dir(p1: Path, p2: Path) -> bool:
+        try:
+            return os.path.samefile(p1, p2)
+        except OSError:
+            return p1.resolve() == p2.resolve()
+
     def _transfer_local(self, srcs: list[Path], dst: Path, move: bool) -> None:
         """Copy/move local paths into the local folder `dst` (F5/F6 and drag & drop).
 
         Runs as a background job; existing folders are merged and each conflicting file is
-        asked about when the job reaches it.
+        asked about when the job reaches it. Same-folder copies generate unique duplicates
+        ('name (2).ext') automatically.
         """
         if not srcs:
             return
-        verb = "이동" if move else "복사"
-        if not self._ask(verb, f"{len(srcs)}개 항목을 다음 위치로 {verb}할까요?\n{dst}"):
-            return
+        is_same_dir = all(self._same_dir(s.parent, dst) for s in srcs)
+        if move:
+            if is_same_dir:
+                QMessageBox.information(self, "이동", "출발지와 목적지가 같은 폴더입니다.")
+                return
+            if not self._ask("이동", f"{len(srcs)}개 항목을 다음 위치로 이동할까요?\n{dst}"):
+                return
+            job_title = f"이동: {len(srcs)}개 항목 → {dst}"
+            duplicate = False
+        else:
+            if is_same_dir:
+                duplicate = True
+                if len(srcs) == 1:
+                    dup = ops.unique_name(dst / srcs[0].name)
+                    if not self._ask("복제", f"'{srcs[0].name}'의 복제본을 생성할까요?\n→ {dup.name}"):
+                        return
+                    job_title = f"복제: {srcs[0].name} → {dup.name}"
+                else:
+                    if not self._ask("복제", f"{len(srcs)}개 항목의 복제본을 현재 폴더에 생성할까요?\n{dst}"):
+                        return
+                    job_title = f"복제: {len(srcs)}개 항목 → {dst}"
+            else:
+                duplicate = False
+                if not self._ask("복사", f"{len(srcs)}개 항목을 다음 위치로 복사할까요?\n{dst}"):
+                    return
+                job_title = f"복사: {len(srcs)}개 항목 → {dst}"
+
         self.start_job(
-            f"{verb}: {len(srcs)}개 항목 → {dst}",
-            lambda job: transfer.transfer(srcs, dst, move=move, on_conflict=job.ask,
-                                          on_error=job.on_error, stats=job.stats,
-                                          control=job.control))
+            job_title,
+            lambda job: transfer.transfer(srcs, dst, move=move, duplicate=duplicate,
+                                          on_conflict=job.ask, on_error=job.on_error,
+                                          stats=job.stats, control=job.control))
 
     def _resolve_conflicts(self, names: list[str], allow_rename: bool) -> dict[str, str] | None:
         """Ask what to do with each already-existing name; None means the user cancelled."""

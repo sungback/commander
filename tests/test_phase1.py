@@ -58,16 +58,29 @@ def test_conflict_apply_to_all_asks_once(tmp_path, monkeypatch):
     assert (b / "only.txt").read_text() == "new"
 
 
-def test_copy_onto_itself_reports_error_and_keeps_file(tmp_path, monkeypatch):
+def test_copy_onto_itself_creates_duplicate_and_move_is_blocked(tmp_path, monkeypatch):
     win, a, _b = _win(tmp_path, monkeypatch)
-    warnings = []
-    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args[2]))
+    infos = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *args: infos.append(args[2]))
     win.panels[1].set_path(str(a))  # both panels show the same folder
     _select_file(win)
-    win.transfer(move=False)  # conflict answer is "overwrite"
+
+    # Move onto same folder is blocked with an informational dialog
+    win.transfer(move=True)
+    _idle(win)
+    assert len(infos) == 1 and "같은 폴더" in infos[0]
+    assert (a / "f.txt").read_text() == "x"
+
+    # Copy onto same folder creates a unique duplicate automatically
+    win.transfer(move=False)
     _idle(win)
     assert (a / "f.txt").read_text() == "x"
-    assert len(warnings) == 1 and "f.txt" in warnings[0]
+    assert (a / "f (2).txt").read_text() == "x"
+
+    # Second copy creates the next numbered duplicate
+    win.transfer(move=False)
+    _idle(win)
+    assert (a / "f (3).txt").read_text() == "x"
 
 
 def test_delete_goes_to_trash_and_shift_deletes_permanently(tmp_path, monkeypatch):

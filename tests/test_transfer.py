@@ -229,3 +229,19 @@ def test_copy_does_not_follow_existing_part_symlink(tree, tmp_path):
     transfer.transfer([src / "a.txt"], dst)
     assert (dst / "a.txt").read_text() == "aaa"
     assert sibling.is_symlink() and valuable.read_text() == "untouched"
+
+
+def test_transfer_duplicate_same_folder(tree):
+    src, _dst = tree
+    # File duplication
+    transfer.transfer([src / "a.txt"], src, duplicate=True)
+    assert (src / "a (2).txt").read_text() == "aaa"
+    transfer.transfer([src / "a.txt"], src, duplicate=True)
+    assert (src / "a (3).txt").read_text() == "aaa"
+    transfer.transfer([src / "a (2).txt"], src, duplicate=True)
+    assert (src / "a (4).txt").read_text() == "aaa"
+
+    # Directory duplication
+    transfer.transfer([src / "d"], src, duplicate=True)
+    assert (src / "d (2)" / "b.txt").read_text() == "bb"
+    assert (src / "d (2)" / "deep" / "c.txt").read_text() == "c"

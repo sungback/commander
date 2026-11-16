@@ -7,6 +7,7 @@ from test_smoke import _idle, _names, _setup, _wait
 
 from commander.app import MainWindow
 from commander.queue_panel import describe, format_duration
+from commander.transfer import Cancelled
 from commander.workers import Job
 
 
@@ -17,11 +18,12 @@ def _win(tmp_path, monkeypatch):
 
 
 def _gated(gate, items=("a", "b")):
-    """Job body that reports one item, then idles (honouring pause/cancel) until `gate` is set."""
+    """Job body that reports one item, then idles until `gate` is set or cancelled."""
     def run(job):
         job.on_item(Path(items[0]))
         while not gate.wait(0.01):
-            job.control.checkpoint()
+            if job.control.cancelled:
+                raise Cancelled
         for name in items[1:]:
             job.on_item(Path(name))
     return run

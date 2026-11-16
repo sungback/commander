@@ -1,6 +1,7 @@
 """UI-independent file operations."""
 import json
 import os
+import re
 import shutil
 import stat
 import threading
@@ -97,10 +98,17 @@ OnConflict = Callable[[Path, Path], str]  # (src, dst) -> "overwrite" | "skip" |
 OnError = Callable[[Path, Exception], None]
 
 
+_DUP_PATTERN = re.compile(r"^(.*?)\s+\((\d+)\)$")
+
+
 def unique_name(dst: Path) -> Path:
     """First free sibling of `dst`: 'name (2).ext', 'name (3).ext', ..."""
     stem, suffix = (dst.name, "") if dst.is_dir() and not dst.is_symlink() else (dst.stem, dst.suffix)
-    n = 2
+    m = _DUP_PATTERN.match(stem)
+    if m:
+        stem, n = m.group(1), int(m.group(2)) + 1
+    else:
+        n = 2
     while True:
         cand = dst.with_name(f"{stem} ({n}){suffix}")
         if not cand.exists() and not cand.is_symlink():

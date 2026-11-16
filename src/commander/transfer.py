@@ -104,11 +104,21 @@ def measure(paths: Iterable[Path], control: Control | None = None) -> tuple[int,
     return total, files
 
 
+def _is_same_item(src: Path, dst: Path) -> bool:
+    try:
+        return os.path.samefile(src, dst)
+    except OSError:
+        return src.resolve() == dst.resolve()
+
+
 def transfer(srcs: Iterable[Path], dst_dir: Path, *, move: bool = False,
+             duplicate: bool = False,
              on_conflict: ops.OnConflict | None = None, on_error: ops.OnError | None = None,
              stats: Stats | None = None, control: Control | None = None) -> None:
     """Copy (or move) `srcs` into `dst_dir`.
 
+    When `duplicate` is True, an item copied into its own folder is given a unique
+    sibling name ('name (2).ext') instead of raising or prompting a conflict.
     An existing destination folder is merged into rather than replaced; `on_conflict(src, dst)`
     is asked per conflicting file and answers "overwrite", "skip" or "rename" (anything else, or
     no callback, raises FileExistsError). With `on_error`, a failing file is reported and the
@@ -125,15 +135,18 @@ def transfer(srcs: Iterable[Path], dst_dir: Path, *, move: bool = False,
     run = _Run(move, on_conflict, on_error, stats, control)
     for src in srcs:
         control.checkpoint()
+        target = dst_dir / src.name
         try:
             ops._check(src, dst_dir)
-            run.place(src, dst_dir / src.name)
+            if duplicate and not move and _is_same_item(src, target):
+                target = ops.unique_name(target)
+            run.place(src, target)
         except (OSError, ValueError, shutil.Error) as e:
             if on_error is None:
                 raise
             on_error(src, e)
         finally:
-            ops.invalidate_size_cache(dst_dir / src.name)
+            ops.invalidate_size_cache(target)
             if move:
                 ops.invalidate_size_cache(src)
 

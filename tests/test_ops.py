@@ -114,6 +114,7 @@ def test_conflict_policy_skip_rename_overwrite(tree):
     assert (dst / "d (2)" / "b.txt").read_text() == "b"
     ops.copy([src / "a.txt"], dst, on_conflict=lambda s, d: "rename")
     assert (dst / "a (3).txt").exists()
+    assert ops.unique_name(dst / "a (3).txt").name == "a (4).txt"
     ops.move([src / "a.txt"], dst, on_conflict=lambda s, d: "overwrite")
     assert (dst / "a.txt").read_text() == "a" and not (src / "a.txt").exists()
 
@@ -166,4 +167,19 @@ def test_remove_readonly_file_and_dir(tmp_path):
 
     ops.remove(ro_dir)
     assert not ro_dir.exists()
+
+
+def test_unique_name_numbering(tmp_path):
+    f = tmp_path / "item.txt"
+    f.touch()
+    assert ops.unique_name(f) == tmp_path / "item (2).txt"
+    (tmp_path / "item (2).txt").touch()
+    assert ops.unique_name(f) == tmp_path / "item (3).txt"
+    assert ops.unique_name(tmp_path / "item (2).txt") == tmp_path / "item (3).txt"
+
+    d = tmp_path / "folder"
+    d.mkdir()
+    assert ops.unique_name(d) == tmp_path / "folder (2)"
+    (tmp_path / "folder (2)").mkdir()
+    assert ops.unique_name(tmp_path / "folder (2)") == tmp_path / "folder (3)"
 
