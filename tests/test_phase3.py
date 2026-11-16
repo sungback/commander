@@ -105,7 +105,8 @@ def test_compare_dirs_selects_differences_in_both_panels(tmp_path, monkeypatch):
     win, a, b = _win(tmp_path, monkeypatch)
     _sync_tree(a, b)
     left, right = win.panels
-    _wait(lambda: {"clash.txt", "only_a.txt"} <= _names(left) and "sub" in _names(right))
+    _wait(lambda: {"clash.txt", "newer.txt", "only_a.txt"} <= _names(left)
+          and {"clash.txt", "sub"} <= _names(right))
     infos = []
     monkeypatch.setattr(QMessageBox, "information", lambda *args: infos.append(args[2]))
     win.actions_by_name["compare_dirs"].trigger()

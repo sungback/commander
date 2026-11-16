@@ -307,6 +307,73 @@ def test_search_dialog_navigates(tmp_path, monkeypatch):
     assert win.panels[0].current_path() == str(b / "deep")
 
 
+def test_search_feed_to_panel(tmp_path, monkeypatch):
+    import os
+
+    from PySide6.QtCore import QItemSelectionModel, Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QInputDialog
+
+    from commander.search_dialog import SearchDialog
+
+    _app, win, a, b = _setup(tmp_path, monkeypatch)
+    win.active_index = lambda: 0
+    (a / "sub").mkdir()
+    (a / "sub" / "file1.txt").write_text("hello 1")
+    (a / "sub" / "file2.txt").write_text("hello 2")
+    (a / "other.log").write_text("log")
+    win.panels[0].set_path(str(a))
+
+    answers = iter([("*.txt", True), ("", True)])
+    monkeypatch.setattr(QInputDialog, "getText", lambda *_: next(answers))
+
+    def fake_exec(self):
+        _wait(lambda: self.results.count() == 3 and self.worker.isFinished())
+        assert self.feed_btn.isEnabled()
+        self.feed_btn.click()
+
+    monkeypatch.setattr(SearchDialog, "exec", fake_exec)
+    win.search()
+
+    panel = win.panels[0]
+    assert panel.flat
+    assert "[검색 결과: *.txt (3개)]" in panel.path_bar.text()
+
+    # Verify rows in panel model
+    m = panel._tab.arch_model
+    names = [m.item(r, 0).text() for r in range(m.rowCount())]
+    rel1 = os.path.relpath(a / "sub" / "file1.txt", str(a))
+    rel2 = os.path.relpath(a / "sub" / "file2.txt", str(a))
+    assert names == ["..", "f.txt", rel1, rel2]
+
+    # Select all search results (excluding "..") and copy to panel 1 (folder b)
+    sm = panel.view.selectionModel()
+    sm.clearSelection()
+    for r in range(1, m.rowCount()):
+        sm.select(m.index(r, 0), QItemSelectionModel.Select | QItemSelectionModel.Rows)
+
+    sel = panel.selected_paths()
+    assert sel == [a / "f.txt", a / "sub" / "file1.txt", a / "sub" / "file2.txt"]
+
+    # F5 Copy to other panel (b)
+    win.transfer(move=False)
+    _idle(win)
+    assert (b / "f.txt").read_text() == "x"
+    assert (b / "file1.txt").read_text() == "hello 1"
+    assert (b / "file2.txt").read_text() == "hello 2"
+
+    # Deleting a file and refreshing updates the search view
+    (a / "sub" / "file1.txt").unlink()
+    panel.refresh_flat()
+    names_after = [m.item(r, 0).text() for r in range(m.rowCount())]
+    assert names_after == ["..", "f.txt", rel2]
+
+    # Leaving flat view via Backspace returns to folder a
+    QTest.keyClick(panel.view, Qt.Key_Backspace)
+    assert not panel.flat
+    assert panel.current_path() == str(a)
+
+
 def test_ftp_browse_download_upload(tmp_path, monkeypatch):
     import threading
 

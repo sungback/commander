@@ -4,7 +4,7 @@
 상태: `[ ]` 대기 / `[~]` 진행 중 / `[x]` 완료
 
 ## 현재 상태 요약 (세션 복원용)
-- **버전**: `v0.3.27` (`pyproject.toml`, `src/commander/__init__.py`)
+- **버전**: `v0.3.28` (`pyproject.toml`, `src/commander/__init__.py`)
 - **원격 저장소**: https://github.com/sungback/commander (`origin/main`)
 - **릴리스**:
   - `v0.1.0`: macOS 초기 릴리스 (`commander.dmg`, `commander.zip` 수동 업로드 완료)
@@ -36,10 +36,11 @@
   - `v0.3.23`: F4 텍스트 에디터에서 저장되지 않은 변경 사항이 있을 때 닫기 전 저장 확인 대화상자 표시 및 타이틀바 수정 상태(`*`) 표시
   - `v0.3.26`: CI 릴리스 워크플로 codesign 상세 플래그(`--verbose=4`) 반영으로 macOS 검증 완성
   - `v0.3.27`: 한글 ZIP 파일 압축 해제 및 탐색 시 CP949/EUC-KR 및 무플래그 UTF-8 파일명 자동 감지·디코딩
+  - `v0.3.28`: 검색 결과를 메인 패널로 내보내기(Feed to Listbox) 지원 (일괄 복사·이동·삭제·이름변경 연계 및 폴더 진입 지원)
 - **즉시 실행/검증 명령**:
   - `./scripts/check.sh` — `ruff` + `pytest` + 실제 홈 디렉터리 오프스크린 스모크/성능 체크
   - `./scripts/run.sh` — 소스 직접 실행 (`--app` 옵션 시 `/Applications/commander.app` 재빌드·설치·실행)
-- **최근 완료**: 한글 ZIP CP949/EUC-KR 자동 디코딩 및 추출 지원, 버전 `v0.3.27` 릴리스 준비
+- **최근 완료**: 검색 결과 패널로 내보내기(Feed to Listbox) 구현 및 검증, 버전 `v0.3.28` 릴리스 준비
 - **다음 예정 작업**: 릴리스 후 실기기 확인 권장 — 헤드리스 테스트로는 검증 못 한 것: 실제 마우스 드래그 앤 드롭, OS 휴지통 이동, Finder/탐색기·터미널 실행, 네이티브 다크 모드, 메뉴 막대 단축키, 패키징된 앱의 Qt 한국어 번역(`qtbase_ko.qm`) 포함 여부
 
 ## v0.3.22 폴더 용량 계산

@@ -792,9 +792,13 @@ class MainWindow(QMainWindow):
             self, "파일 검색", "포함할 텍스트 (비워 두면 이름으로만 검색):")
         if not ok:
             return
-        dlg = SearchDialog(Path(panel.current_path()), pattern, self, text=text)
+        root = Path(panel.current_path())
+        dlg = SearchDialog(root, pattern, self, text=text)
         dlg.exec()
-        if dlg.chosen is not None:
+        if dlg.feed_to_panel:
+            panel.show_search_results(dlg.found_paths, pattern=pattern, root=root)
+            self._sync_view_actions()
+        elif dlg.chosen is not None:
             target = dlg.chosen if dlg.chosen.is_dir() else dlg.chosen.parent
             panel.set_path(str(target))
 

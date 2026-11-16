@@ -1,6 +1,7 @@
 import os
 import posixpath
 import shutil
+import stat
 import time
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -379,6 +380,7 @@ class _Tab(QWidget):
         self.local_dir = path  # last local folder, kept while browsing a remote
         self._free_space_cache: tuple[str, float, str] | None = None
         self.flat = False  # local folder shown with all files of its subfolders in one list
+        self._search_params: tuple[list[Path], str, Path] | None = None
         self.hidden_columns: set[int] = set()  # column indexes hidden by the user's settings
         self._size_worker: DirSizeWorker | None = None
         self._pending_cur: str | None = None
@@ -561,6 +563,7 @@ class _Tab(QWidget):
         """
         if self.archive is not None or self.remote is not None:
             return
+        self._search_params = None
         root = self.local_dir
         rows: list[tuple[str, bool, int]] = []
         truncated = False
@@ -587,6 +590,34 @@ class _Tab(QWidget):
         self.flat = True
         note = f", 처음 {FLAT_LIMIT}개만 표시" if truncated else ""
         self._show_rows(rows, f"{root}  [평면 보기{note}]", root)
+
+    def show_search_results(self, paths: list[Path], pattern: str, root: Path) -> None:
+        """Feed search results into this tab as a flat list."""
+        if self.archive is not None or self.remote is not None:
+            self._leave_archive()
+        root_str = str(root)
+        self.local_dir = root_str
+        self._search_params = (paths, pattern, root)
+        rows: list[tuple[str, bool, int]] = []
+        for p in paths:
+            try:
+                st = os.lstat(p)
+                is_dir = stat.S_ISDIR(st.st_mode)
+                size = 0 if is_dir else st.st_size
+            except OSError:
+                is_dir = p.is_dir() if p.exists() else False
+                size = 0
+            try:
+                rel = os.path.relpath(p, root_str)
+            except ValueError:
+                rel = str(p)
+            rows.append((rel, is_dir, size))
+        rows.sort(key=lambda r: (not r[1], r[0].lower()))
+        if not self.flat:
+            self._reset_filter()
+        self.flat = True
+        title = root.name or root_str
+        self._show_rows(rows, f"{root_str}  [검색 결과: {pattern} ({len(rows)}개)]", f"{title} [검색 결과]")
 
     def toggle_flat(self) -> bool:
         if self.flat:
@@ -651,6 +682,7 @@ class _Tab(QWidget):
             self.remote = None
         self._raw_rows = None
         self.flat = False
+        self._search_params = None
         if self.archive is None and self.view.model() is self.model:
             return
         self.archive = None
@@ -926,8 +958,12 @@ class _Tab(QWidget):
             name = idx.siblingAtColumn(0).data()
             if name == "..":
                 self.go_up()
-            elif self.file_activated:
-                self.file_activated(Path(self.local_dir) / name)
+            else:
+                target = Path(self.local_dir) / name
+                if target.is_dir():
+                    self.set_path(str(target))
+                elif self.file_activated:
+                    self.file_activated(target)
             return
         if self.model.fileName(idx) == "..":
             self.go_up()
@@ -1156,11 +1192,20 @@ class FilePanel(QWidget):
     def toggle_flat(self) -> bool:
         return self._tab.toggle_flat()
 
+    def show_search_results(self, paths: list[Path], pattern: str, root: Path) -> None:
+        self._tab.show_search_results(paths, pattern, root)
+
     def refresh_flat(self) -> None:
         """Re-read flat views (they are snapshots; the local model refreshes itself)."""
         for i in range(self.tabs.count()):
-            if self.tabs.widget(i).flat:
-                self.tabs.widget(i).show_flat()
+            tab = self.tabs.widget(i)
+            if tab.flat:
+                if tab._search_params is not None:
+                    paths, pattern, root = tab._search_params
+                    existing = [p for p in paths if p.exists() or p.is_symlink()]
+                    tab.show_search_results(existing, pattern, root)
+                else:
+                    tab.show_flat()
 
     def selected_paths(self) -> list[Path]:
         return self._tab.selected_paths()
