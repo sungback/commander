@@ -73,3 +73,32 @@ def test_readonly_sets_write_bits_only(tmp_path):
     assert stat.S_IMODE(file.stat().st_mode) == 0o554
     properties.change_attributes([file], readonly=False)
     assert stat.S_IMODE(file.stat().st_mode) == 0o754
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows handle semantics')
+def test_windows_readonly_and_timestamp_preserve_other_attribute(tmp_path):
+    file = tmp_path / 'file'
+    file.write_text('x')
+    properties.change_attributes([file], modified=1000000000, readonly=True)
+    assert file.stat().st_mtime == 1000000000
+    assert file.stat().st_file_attributes & stat.FILE_ATTRIBUTE_READONLY
+    properties.change_attributes([file], modified=1000000100)
+    assert file.stat().st_mtime == 1000000100
+    assert file.stat().st_file_attributes & stat.FILE_ATTRIBUTE_READONLY
+    properties.change_attributes([file], readonly=False)
+    assert not file.stat().st_file_attributes & stat.FILE_ATTRIBUTE_READONLY
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows handle semantics')
+def test_windows_handle_rejects_links_without_modifying_target(tmp_path):
+    target = tmp_path / 'target'
+    target.write_text('x')
+    link = tmp_path / 'link'
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip('symlinks unavailable')
+    original = target.stat().st_mtime
+    with pytest.raises(ValueError, match='연결점'):
+        properties._change_windows(link, None, 1000000000)
+    assert target.stat().st_mtime == original
