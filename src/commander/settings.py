@@ -17,6 +17,7 @@ class Settings:
     columns: dict[str, bool] = field(default_factory=lambda: dict.fromkeys(COLUMNS, True))
     shortcuts: dict[str, list[str]] = field(default_factory=dict)  # command id -> keys (overrides)
     tools: list[dict[str, str]] = field(default_factory=list)  # {"name", "command", "shortcut"}
+    associations: dict[str, str] = field(default_factory=dict)  # lowercase extension -> application
 
 
 def _clean(data: dict) -> Settings:
@@ -39,6 +40,12 @@ def _clean(data: dict) -> Settings:
             if isinstance(t, dict) and str(t.get("name", "")).strip() and str(t.get("command", "")).strip():
                 s.tools.append({"name": str(t["name"]).strip(), "command": str(t["command"]).strip(),
                                 "shortcut": str(t.get("shortcut", "")).strip()})
+    associations = data.get("associations")
+    if isinstance(associations, dict):
+        s.associations = {k.lower(): v for k, v in associations.items()
+                          if isinstance(k, str) and k.startswith(".") and len(k) > 1
+                          and not any(c in k for c in "/\\\x00")
+                          and isinstance(v, str) and v.strip() and "\x00" not in v}
     return s
 
 

@@ -296,3 +296,62 @@ def test_cp949_collision_char_zip(tmp_path):
     archive.extract(zip_path, ["짜.txt"], dst)
     assert (dst / "짜.txt").read_bytes() == b"jja"
 
+
+def test_extract_all_stages_and_preserves_conflicts(tmp_path, arc):
+    dst = tmp_path / "out-all"
+    dst.mkdir()
+    (dst / "d").mkdir()
+    (dst / "d" / "a.txt").write_text("old")
+    archive.extract_all(arc, dst, on_conflict=lambda src, dest: "skip")
+    assert (dst / "d" / "a.txt").read_text() == "old"
+    assert (dst / "d" / "sub" / "b.txt").read_text() == "b"
+    assert not list(dst.glob(".commander-extract-*"))
+
+
+def test_extract_all_rejects_unsafe_members_and_preserves_archive(tmp_path):
+    evil = tmp_path / "evil.zip"
+    with zipfile.ZipFile(evil, "w") as z:
+        z.writestr("../escape", "bad")
+    with pytest.raises(ValueError):
+        archive.extract_all(evil, tmp_path)
+    assert not (tmp_path.parent / "escape").exists()
+    with zipfile.ZipFile(evil, "w") as z:
+        z.writestr("evil.zip", "replacement")
+    before = evil.read_bytes()
+    with pytest.raises(ValueError):
+        archive.extract_all(evil, tmp_path, on_conflict=lambda *_: "overwrite")
+    assert evil.read_bytes() == before
+
+
+def test_archive_integrity_detects_bad_crc_without_extracting(tmp_path):
+    p = tmp_path / "bad.zip"
+    with zipfile.ZipFile(p, "w", compression=zipfile.ZIP_STORED) as z:
+        z.writestr("file.txt", b"original data")
+    data = p.read_bytes().replace(b"original data", b"modified data", 1)
+    p.write_bytes(data)
+    assert archive.test_integrity(p)[0][0] == "file.txt"
+    assert list(tmp_path.iterdir()) == [p]
+
+
+def test_archive_integrity_cancel(tmp_path):
+    from commander.transfer import Cancelled, Control
+
+    p = _zip(tmp_path / "test.zip")
+    control = Control()
+    control.cancel()
+    with pytest.raises(Cancelled):
+        archive.test_integrity(p, control=control)
+
+
+def test_extract_all_rejects_type_change_without_removing_existing_directory(tmp_path):
+    source = tmp_path / "input.zip"
+    with zipfile.ZipFile(source, "w") as z:
+        z.writestr("existing", "new file")
+    dst = tmp_path / "out"
+    dst.mkdir()
+    (dst / "existing").mkdir()
+    (dst / "existing" / "important").write_text("keep")
+    with pytest.raises(ValueError):
+        archive.extract_all(source, dst, on_conflict=lambda *_: "overwrite")
+    assert (dst / "existing" / "important").read_text() == "keep"
+

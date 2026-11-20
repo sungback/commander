@@ -2,8 +2,10 @@
 import atexit
 import shutil
 import subprocess
+import tarfile
 import threading
 import zipfile
+import zlib
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
@@ -122,7 +124,8 @@ class Job(QThread):
             self.result = self._run_fn(self)
         except (Cancelled, transfer.Cancelled):
             pass
-        except (OSError, ValueError, shutil.Error) as e:
+        except (OSError, ValueError, EOFError, shutil.Error, zipfile.BadZipFile,
+                tarfile.TarError, zlib.error) as e:
             self.errors.append(f"{type(e).__name__}: {e}")
 
 

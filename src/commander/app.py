@@ -43,7 +43,12 @@ from . import (
     archive,
     checksum,
     compare,
+    descriptions,
+    file_actions,
+    file_encoding,
+    file_parts,
     ops,
+    properties,
     rename,
     settings,
     shell,
@@ -57,6 +62,7 @@ from .dialogs import TextDialog
 from .diff_dialog import DiffDialog
 from .panel import FilePanel
 from .preview_widget import PreviewWidget
+from .properties_dialog import ChangeAttributesDialog, PropertiesDialog
 from .queue_panel import QueuePanel
 from .remote import FtpClient, SftpClient
 from .rename_dialog import RenameDialog
@@ -155,6 +161,14 @@ class MainWindow(QMainWindow):
             "copy": lambda: self.transfer(move=False), "move": lambda: self.transfer(move=True),
             "mkdir": self.make_dir, "rename": self.batch_rename, "delete": self.delete,
             "delete_permanent": lambda: self.delete(permanent=True), "pack": self.pack,
+            "unpack": self.unpack, "test_archive": self.test_archive,
+            "properties": self.show_properties, "change_attributes": self.change_attributes,
+            "disk_usage": self.disk_usage, "split_file": self.split_file,
+            "join_files": self.join_files, "description": self.edit_description,
+            "encode_file": lambda: self.encode_file(False),
+            "decode_file": lambda: self.encode_file(True), "open_with": self.open_with,
+            "file_association": self.file_association, "print_file": self.print_file,
+            "quit": self.close,
             "copy_path": self.copy_path, "switch_panel": self.switch_panel,
             "back": lambda: self.panels[self.active_index()].go_back(),
             "forward": lambda: self.panels[self.active_index()].go_forward(),
@@ -182,6 +196,13 @@ class MainWindow(QMainWindow):
             self.addAction(act)  # keeps the shortcut alive even if the menu bar is hidden
             self.actions_by_name[cmd.id] = act
         self.menus["탐색"].aboutToShow.connect(self._sync_view_actions)
+        for cmd_id in ("diff", "checksum", "verify"):
+            self.menus["파일"].addAction(self.actions_by_name[cmd_id])
+        self.menus["파일"].removeAction(self.actions_by_name["quit"])
+        self.menus["파일"].addSeparator()
+        self.menus["파일"].addAction(self.actions_by_name["quit"])
+        self.menus["파일"].aboutToShow.connect(self._sync_file_actions)
+        self.menus["파일"].aboutToHide.connect(self._restore_file_actions)
         self.tools_menu = self.menus["도구"]
         self._tool_actions: list[QAction] = []
         help_menu = self.menuBar().addMenu("도움말")
@@ -529,8 +550,168 @@ class MainWindow(QMainWindow):
 
     def open_default(self, path: Path) -> None:
         """Open a local file with the application the OS associates with it."""
+        try:
+            if file_actions.open_associated(path, self.settings.associations):
+                return
+        except (OSError, ValueError) as e:
+            self._error(e)
+            return
         if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
             self._error(OSError(f"이 파일을 열 수 있는 앱이 없습니다: {path}"))
+
+    def _sync_file_actions(self) -> None:
+        panel = self.panels[self.active_index()]
+        local = not (panel.in_archive or panel.in_remote)
+        paths = panel.selected_paths() if local else []
+        one_file = len(paths) == 1 and paths[0].is_file() and not paths[0].is_symlink()
+        for name in ("open_with", "file_association", "print_file", "split_file", "join_files",
+                     "description", "encode_file", "decode_file"):
+            self.actions_by_name[name].setEnabled(one_file)
+        for name in ("change_attributes", "disk_usage"):
+            self.actions_by_name[name].setEnabled(bool(paths))
+        self.actions_by_name["properties"].setEnabled(len(paths) == 1)
+        for name in ("unpack", "test_archive"):
+            self.actions_by_name[name].setEnabled(one_file and archive.is_archive(paths[0]))
+
+    def _restore_file_actions(self) -> None:
+        # Menu state is a snapshot; shortcuts must work after selection or tab changes.
+        for name in ("open_with", "file_association", "print_file", "split_file", "join_files",
+                     "description", "encode_file", "decode_file", "change_attributes", "disk_usage",
+                     "properties", "unpack", "test_archive"):
+            self.actions_by_name[name].setEnabled(True)
+
+    def _single_file(self) -> Path | None:
+        sel = self._local_selection()
+        if sel is None:
+            return None
+        paths = sel[1]
+        if len(paths) != 1 or not paths[0].is_file() or paths[0].is_symlink():
+            self._error(ValueError("로컬 파일 하나를 선택하세요"))
+            return None
+        return paths[0]
+
+    def open_with(self) -> None:
+        path = self._single_file()
+        if path is None:
+            return
+        program = file_actions.choose_program(self)
+        if program:
+            try:
+                file_actions.open_with(path, program)
+            except (OSError, ValueError) as e:
+                self._error(e)
+
+    def file_association(self) -> None:
+        path = self._single_file()
+        if path:
+            try:
+                if file_actions.edit_association(self, path, self.settings):
+                    settings.save(self.settings, self._settings_file)
+            except (OSError, ValueError) as e:
+                self._error(e)
+
+    def print_file(self) -> None:
+        path = self._single_file()
+        if path:
+            try:
+                file_actions.print_file(self, path)
+            except (OSError, ValueError) as e:
+                self._error(e)
+
+    def show_properties(self) -> None:
+        sel = self._local_selection()
+        if sel and len(sel[1]) == 1:
+            try:
+                PropertiesDialog(sel[1][0], self).exec()
+            except OSError as e:
+                self._error(e)
+        elif sel:
+            self._error(ValueError("항목 하나를 선택하세요"))
+
+    def change_attributes(self) -> None:
+        sel = self._local_selection()
+        if not sel or not sel[1]:
+            return
+        dialog = ChangeAttributesDialog(len(sel[1]), self)
+        if dialog.exec():
+            values = dialog.values()
+            self.start_job("속성 변경", lambda job: properties.change_attributes(
+                sel[1], **values, control=job.control, on_error=job.on_error))
+
+    def disk_usage(self) -> None:
+        sel = self._local_selection()
+        if not sel or not sel[1]:
+            return
+
+        def done(job):
+            result = job.result
+            if result is not None:
+                allocated = "지원하지 않음" if result.allocated is None else f"{result.allocated:,} 바이트"
+                QMessageBox.information(self, "점유 공간 계산",
+                    f"논리 크기: {result.logical:,} 바이트\n점유 공간: {allocated}\n"
+                    f"파일: {result.files:,}개, 폴더: {result.directories:,}개")
+
+        self.start_job("점유 공간 계산", lambda job: properties.calculate_sizes(
+            sel[1], control=job.control, on_error=job.on_error), on_done=done)
+
+    def _local_destination(self) -> Path | None:
+        other = self.panels[1 - self.active_index()]
+        if other.in_archive or other.in_remote:
+            self._error(ValueError("반대편 패널에서 로컬 폴더를 여세요"))
+            return None
+        return Path(other.current_path())
+
+    def split_file(self) -> None:
+        path = self._single_file()
+        if path is None:
+            return
+        dst = self._local_destination()
+        if dst is None:
+            return
+        size, ok = QInputDialog.getInt(self, "파일 분할", "조각 크기 (MiB):", 100, 1, 1048576)
+        if ok and self._ask("파일 분할", f"{path.name}을(를) {dst}에 분할할까요?\n기존 파일은 덮어쓰지 않습니다."):
+            self.start_job("파일 분할", lambda job: file_parts.split_file(
+                path, dst, size * 1024 * 1024, stats=job.stats, control=job.control))
+
+    def join_files(self) -> None:
+        path = self._single_file()
+        if path is None:
+            return
+        dst = self._local_destination()
+        if dst and self._ask("파일 결합", f"선택한 분할 목록으로 {dst}에 결합할까요?\n기존 파일은 덮어쓰지 않습니다."):
+            self.start_job("파일 결합", lambda job: file_parts.join_file(
+                path, dst, stats=job.stats, control=job.control))
+
+    def edit_description(self) -> None:
+        path = self._single_file()
+        if path is None:
+            return
+        try:
+            old = descriptions.read_description(path.parent, path.name)
+            value, ok = QInputDialog.getText(self, "파일 설명 편집", path.name, QLineEdit.Normal, old)
+            if ok:
+                descriptions.write_description(path.parent, path.name, value)
+        except (OSError, ValueError, RuntimeError) as e:
+            self._error(e)
+
+    def encode_file(self, decode: bool) -> None:
+        path = self._single_file()
+        if path is None:
+            return
+        dst = self._local_destination()
+        if dst is None:
+            return
+        name, ok = QInputDialog.getText(self, "파일 디코드" if decode else "파일 인코드",
+            "MIME Base64 출력 파일 이름 (기존 파일 덮어쓰기 불가):", QLineEdit.Normal,
+            path.stem if decode else path.name + ".b64")
+        if not ok:
+            return
+        if not ops.is_valid_name(name):
+            self._error(ValueError("올바른 파일 이름을 입력하세요"))
+            return
+        self.start_job("파일 디코드" if decode else "파일 인코드",
+            lambda job: file_encoding.convert(path, dst / name, decode=decode,
+                                            stats=job.stats, control=job.control))
 
     def copy_path(self) -> None:
         labels = self.panels[self.active_index()].selection_labels()
@@ -951,6 +1132,41 @@ class MainWindow(QMainWindow):
             lambda job: archive.create(dst, paths, overwrite=overwrite, stats=job.stats,
                                        control=job.control, on_error=job.on_error))
 
+    def unpack(self) -> None:
+        path = self._single_file()
+        if path is None:
+            return
+        dst = self._local_destination()
+        if dst is None:
+            return
+        if not archive.is_archive(path):
+            self._error(ValueError("지원하는 압축 파일을 선택하세요"))
+            return
+        if self._ask("압축 해제", f"{path.name}을(를) 다음 폴더에 추출할까요?\n{dst}"):
+            self.start_job("압축 해제", lambda job: archive.extract_all(
+                path, dst, on_conflict=job.ask, on_error=job.on_error,
+                stats=job.stats, control=job.control))
+
+    def test_archive(self) -> None:
+        path = self._single_file()
+        if path is None:
+            return
+        if not archive.is_archive(path):
+            self._error(ValueError("지원하는 압축 파일을 선택하세요"))
+            return
+
+        def done(job):
+            if job.errors or job.result is None:
+                return
+            if job.result:
+                TextDialog("압축 검사", "\n".join(f"{name}: {error}" for name, error in job.result),
+                           self, summary=f"오류 {len(job.result)}개").exec()
+            else:
+                QMessageBox.information(self, "압축 검사", "압축 파일 검사에 성공했습니다.")
+
+        self.start_job("압축 검사", lambda job: archive.test_integrity(
+            path, stats=job.stats, control=job.control), on_done=done)
+
     def checksum(self) -> None:
         """Compute checksums of the selected files (folders are included recursively)."""
         sel = self._local_selection()
@@ -967,8 +1183,9 @@ class MainWindow(QMainWindow):
 
         def done(job: Job) -> None:
             if job.result:
+                ext = "sfv" if algo == "crc32" else algo
                 TextDialog(f"{label} 체크섬", job.result, self,
-                           save_as=base / f"{stem}.{algo}").exec()
+                           save_as=base / f"{stem}.{ext}").exec()
 
         self.start_job(
             f"{label} 계산: {len(paths)}개 항목",
@@ -982,7 +1199,7 @@ class MainWindow(QMainWindow):
             return
         sums = [p for p in sel[1] if p.suffix.lower() in checksum.EXTENSIONS and p.is_file()]
         if len(sums) != 1:
-            self._error(ValueError(".sha256, .sha1, .md5 파일 하나를 선택하세요"))
+            self._error(ValueError(".sha256, .sha1, .md5, .sfv 파일 하나를 선택하세요"))
             return
 
         def done(job: Job) -> None:

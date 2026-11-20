@@ -1,8 +1,9 @@
 """UI-independent archive access (zip, tar, tar.gz/bz2/xz): browse, extract, create."""
 import os
-import shutil
 import tarfile
+import tempfile
 import zipfile
+import zlib
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -196,7 +197,7 @@ def _safe_rel(path: str) -> str:
 
 
 def extract(archive: Path, inner_paths: Iterable[str], dst_dir: Path, overwrite: bool = False,
-            progress=None) -> None:
+            progress=None, control=None) -> None:
     """Extract the given entries (directories recursively) into dst_dir.
 
     Raises ValueError for paths escaping dst_dir. Links and special members are skipped.
@@ -217,6 +218,8 @@ def extract(archive: Path, inner_paths: Iterable[str], dst_dir: Path, overwrite:
                     raise FileExistsError(top)
                 ops.remove(top)
             for m in members:
+                if control:
+                    control.checkpoint()
                 name = (m.filename if is_zip else m.name).rstrip("/")
                 if name != sel and not name.startswith(sel + "/"):
                     continue
@@ -233,9 +236,77 @@ def extract(archive: Path, inner_paths: Iterable[str], dst_dir: Path, overwrite:
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
                 src = a.open(m) if is_zip else a.extractfile(m)
                 with src, open(dest, "wb") as out:
-                    shutil.copyfileobj(src, out)
+                    while chunk := src.read(1 << 20):
+                        out.write(chunk)
+                        if control:
+                            control.checkpoint()
             if progress:
                 progress(Path(sel))
+
+
+def extract_all(path: Path, dst_dir: Path, *, on_conflict=None, stats=None, control=None,
+                on_error=None) -> None:
+    """Extract to a private staging directory, then merge using the safe transfer engine.
+
+    The archive itself can never be a destination, even with an overwrite callback.
+    """
+    from .transfer import transfer
+
+    path, dst_dir = Path(path), Path(dst_dir)
+    if not dst_dir.is_dir():
+        raise NotADirectoryError(dst_dir)
+    entries = read_entries(path)
+    for entry in entries:
+        _safe_rel(entry.path)
+    top = children(entries)
+    if any((dst_dir / e.path).resolve() == path.resolve() for e in entries):
+        raise ValueError("archive cannot overwrite itself during extraction")
+    with tempfile.TemporaryDirectory(prefix=".commander-extract-", dir=dst_dir) as stage:
+        stage_dir = Path(stage)
+        try:
+            extract(path, [e.path for e in top], stage_dir, control=control)
+        except (zipfile.BadZipFile, tarfile.TarError, EOFError, zlib.error) as exc:
+            raise ValueError(f"cannot extract archive {path.name}: {exc}") from exc
+        def safe_conflict(src, dst):
+            if src.is_dir() != (dst.is_dir() and not dst.is_symlink()):
+                raise ValueError(f"cannot replace a file with a folder or vice versa: {dst}")
+            return on_conflict(src, dst) if on_conflict else ""
+
+        transfer([stage_dir / e.path for e in top], dst_dir, on_conflict=safe_conflict,
+                 on_error=on_error, stats=stats, control=control)
+
+
+def test_integrity(path: Path, *, stats=None, control=None) -> list[tuple[str, str]]:
+    """Read every regular archive member; return member errors without extracting files."""
+    from .transfer import CHUNK
+
+    errors = []
+    with _open(Path(path)) as arc:
+        is_zip = isinstance(arc, zipfile.ZipFile)
+        members = arc.infolist() if is_zip else arc.getmembers()
+        files = [m for m in members if not m.is_dir()] if is_zip else [m for m in members if m.isfile()]
+        if stats:
+            stats.total_items = len(files)
+            stats.total_bytes = sum(m.file_size if is_zip else m.size for m in files)
+        for member in files:
+            if control:
+                control.checkpoint()
+            name = member.filename if is_zip else member.name
+            if stats:
+                stats.current = name
+            try:
+                with (arc.open(member) if is_zip else arc.extractfile(member)) as source:
+                    while chunk := source.read(CHUNK):
+                        if stats:
+                            stats.done_bytes += len(chunk)
+                        if control:
+                            control.checkpoint()
+            except (OSError, EOFError, ValueError, RuntimeError, zipfile.BadZipFile,
+                    tarfile.TarError, zlib.error) as exc:
+                errors.append((name, str(exc)))
+            if stats:
+                stats.done_items += 1
+    return errors
 
 
 _TAR_MODES = {".tar": "w", ".tar.gz": "w:gz", ".tgz": "w:gz", ".tar.bz2": "w:bz2",

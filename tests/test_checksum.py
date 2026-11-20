@@ -79,3 +79,38 @@ def test_unreadable_file_is_reported(tree):
     finally:
         checksum.file_hash = keep
     assert errors == ["b.txt"] and text.count("\n") == 1
+
+
+def test_sfv_standard_sample_and_roundtrip(tree):
+    # Public CRC-32/ISO-HDLC check value for the ASCII string 123456789.
+    source = tree / "name with spaces.txt"
+    source.write_bytes(b"123456789")
+    assert checksum.file_hash(source, "crc32") == "cbf43926"
+    listing = tree / "checks.sfv"
+    listing.write_text("; comment\nname with spaces.txt CBF43926\n", encoding="utf-8")
+    assert checksum.verify(listing) == [(source.name, "OK")]
+    listing.write_text(checksum.hash_files([source], tree, "crc32"), encoding="utf-8")
+    assert listing.read_text() == "name with spaces.txt CBF43926\n"
+    assert checksum.verify(listing) == [(source.name, "OK")]
+    source.write_bytes(b"changed")
+    assert checksum.verify(listing) == [(source.name, "FAILED")]
+
+
+def test_checksum_refuses_symlink_escape(tree):
+    outside = tree.parent / "external-checksum.txt"
+    outside.write_bytes(b"hello")
+    try:
+        (tree / "link").symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink unavailable")
+    sums = tree / "checks.sfv"
+    sums.write_text("link 3610A686\n", encoding="utf-8")
+    assert checksum.verify(sums) == [("link", "INVALID")]
+
+
+def test_sfv_invalid_line_is_not_reported_as_success(tree):
+    source = tree / "valid.txt"
+    source.write_bytes(b"123456789")
+    listing = tree / "checks.sfv"
+    listing.write_text("valid.txt CBF43926\nbroken checksum\n", encoding="utf-8")
+    assert checksum.verify(listing) == [("valid.txt", "OK"), ("broken checksum", "INVALID")]
