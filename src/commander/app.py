@@ -57,6 +57,7 @@ from . import (
     theme,
     transfer,
     updater,
+    workspaces,
 )
 from .commands import default_commands, effective_shortcuts
 from .dialogs import TextDialog
@@ -73,6 +74,7 @@ from .settings_dialog import SettingsDialog
 from .sync_dialog import SyncDialog
 from .viewer import ViewerDialog
 from .workers import Job, UpdateCheckWorker, UpdateDownloadWorker, Worker
+from .workspace_dialog import WorkspaceDialog
 
 STATE_FILE = Path.home() / ".config" / "commander" / "state.json"
 
@@ -183,6 +185,8 @@ class MainWindow(QMainWindow):
             "quick_view": self.toggle_quick_view,
             "new_tab": lambda: self.panels[self.active_index()].new_tab(),
             "close_tab": lambda: self.panels[self.active_index()].close_tab(),
+            "lock_tab": lambda: self.panels[self.active_index()].toggle_tab_lock(),
+            "workspaces": self.open_workspaces,
             "command_line": self.focus_command_line, "connect": self.connect_ftp,
             "compare_dirs": self.compare_dirs, "sync": self.sync_dirs, "diff": self.diff_files,
             "duplicates": self.find_duplicates,
@@ -270,6 +274,48 @@ class MainWindow(QMainWindow):
             if active in (0, 1):
                 self._active = active
                 self.panels[active].view.setFocus()
+
+    def open_workspaces(self) -> None:
+        if self.busy():
+            QMessageBox.information(self, "작업 공간", "진행 중인 작업을 마친 후 사용하세요.")
+            return
+        if any(panel.tabs.widget(i).in_remote for panel in self.panels
+               for i in range(panel.tabs.count())):
+            QMessageBox.information(self, "작업 공간", "원격 탭을 닫은 후 사용하세요.")
+            return
+        snapshot = {"panels": [panel.to_state() for panel in self.panels],
+                    "active_panel": self.active_index()}
+        path = self._state_file.with_name("workspaces.json") if self._state_file else None
+        dialog = WorkspaceDialog(path, snapshot, self)
+        if not dialog.exec() or dialog.selected_state is None:
+            return
+        state = dialog.selected_state
+        if not workspaces.valid_state(state):
+            self._error(ValueError("작업 공간 데이터가 올바르지 않습니다"))
+            return
+        for panel in state["panels"]:
+            for tab in panel["tabs"]:
+                if not tab["path"] or not Path(tab["path"]).is_dir():
+                    self._error(ValueError(f"폴더가 없습니다: {tab['path']}"))
+                    return
+                if tab.get("archive") and not Path(tab["archive"]).is_file():
+                    self._error(ValueError(f"압축 파일이 없습니다: {tab['archive']}"))
+                    return
+        if self.busy():
+            QMessageBox.information(self, "작업 공간", "진행 중인 작업을 마친 후 사용하세요.")
+            return
+        if not self._ask("작업 공간", "현재 양쪽 패널의 탭을 저장된 구성으로 교체할까요?"):
+            return
+        if self.busy() or any(panel.tabs.widget(i).in_remote for panel in self.panels
+                              for i in range(panel.tabs.count())):
+            QMessageBox.information(self, "작업 공간", "작업 또는 원격 탭이 있어 복원할 수 없습니다.")
+            return
+        for panel, panel_state in zip(self.panels, state["panels"], strict=True):
+            panel.replace_state(panel_state)
+        self._active = state["active_panel"]
+        self.panels[self._active].view.setFocus()
+        self._sync_view_actions()
+        self.save_state()
 
     def _run_command(self, command_id: str, handler) -> None:
         """Run a command from its shortcut or menu entry.

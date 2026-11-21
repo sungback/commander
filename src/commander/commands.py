@@ -52,6 +52,8 @@ def default_commands(platform: str = sys.platform) -> list[Command]:
         c("quick_view", "빠른 보기 (Quick View)", "탐색", ("Meta+Q",) if mac else ("Ctrl+Q",)),
         c("new_tab", "새 탭", "탐색", ("Ctrl+T",)),
         c("close_tab", "탭 닫기", "탐색", ("Ctrl+W",)),
+        c("lock_tab", "현재 탭 잠금 / 해제", "탐색"),
+        c("workspaces", "작업 공간...", "탐색"),
         c("command_line", "명령줄로 이동", "탐색", ("Ctrl+L",)),
         c("connect", "원격 서버 연결...", "탐색", ("Ctrl+N",)),
         c("compare_dirs", "폴더 비교 (다른 항목 선택)", "도구", ("Shift+F2",)),

@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QStyledItemDelegate,
     QTabWidget,
@@ -363,6 +364,8 @@ class _Tab(QWidget):
         self.drive_box.setFocusPolicy(Qt.NoFocus)
         self.path_bar = _PathEdit(self, path)
         self.path_changed = None  # callback(path), set by FilePanel
+        self.locked = False  # prevents accidental tab closure
+        self.tab_title = _title(path)
         self.file_activated = None  # callback(Path): Enter / double-click on a local file
         self.context_requested = None  # callback(global QPoint): right-click in the list
         self.files_dropped = None  # callback(paths, target_dir, move): files dropped on the list
@@ -770,9 +773,11 @@ class _Tab(QWidget):
             "show_hidden": self.show_hidden,
             "current": cur_name or "",
             "selected": sel_names,
+            "locked": self.locked,
         }
 
     def restore_state(self, state: dict) -> None:
+        self.locked = state.get("locked") is True
         self.set_show_hidden(bool(state.get("show_hidden", False)))
         path = state.get("path", "")
         if path and Path(path).is_dir():
@@ -1040,6 +1045,8 @@ class FilePanel(QWidget):
         self.add_tab_button.clicked.connect(self.choose_new_tab)
         self.tabs.setCornerWidget(self.add_tab_button, Qt.TopRightCorner)
         self.tabs.tabCloseRequested.connect(self.close_tab)
+        self.tabs.tabBar().setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tabs.tabBar().customContextMenuRequested.connect(self._tab_context_menu)
         self.tabs.currentChanged.connect(lambda _: self.current_changed.emit())
         self._hidden_columns: set[int] = set()
         layout = QVBoxLayout(self)
@@ -1078,8 +1085,7 @@ class FilePanel(QWidget):
         if prev is not None:
             hdr = prev.view.header()
             tab.view.sortByColumn(hdr.sortIndicatorSection(), hdr.sortIndicatorOrder())
-        tab.path_changed = lambda p, t=tab: (
-            self.tabs.setTabText(self.tabs.indexOf(t), _title(p)), self.current_changed.emit())
+        tab.path_changed = lambda p, t=tab: self._tab_path_changed(t, p)
         tab.set_hidden_columns(self._hidden_columns)
         tab.file_activated = self.file_activated.emit
         tab.context_requested = self.context_requested.emit
@@ -1087,6 +1093,41 @@ class FilePanel(QWidget):
         tab.current_changed = self.current_changed.emit
         self.tabs.setCurrentIndex(self.tabs.addTab(tab, _title(path)))
         tab.view.setFocus()
+
+    def _tab_path_changed(self, tab: _Tab, path: str) -> None:
+        tab.tab_title = _title(path)
+        self._refresh_tab_title(tab)
+        self.current_changed.emit()
+
+    def _refresh_tab_title(self, tab: _Tab) -> None:
+        index = self.tabs.indexOf(tab)
+        if index >= 0:
+            self.tabs.setTabText(index, ("🔒 " if tab.locked else "") + tab.tab_title)
+            self.tabs.setTabToolTip(index, "잠긴 탭" if tab.locked else "")
+
+    def set_tab_locked(self, index: int, locked: bool) -> None:
+        tab = self.tabs.widget(index)
+        if tab is None:
+            return
+        tab.locked = bool(locked)
+        self._refresh_tab_title(tab)
+
+    def toggle_tab_lock(self, index: int | None = None) -> None:
+        index = self.tabs.currentIndex() if index is None else index
+        tab = self.tabs.widget(index)
+        if tab is not None:
+            self.set_tab_locked(index, not tab.locked)
+
+    def _tab_context_menu(self, pos) -> None:
+        bar = self.tabs.tabBar()
+        index = bar.tabAt(pos)
+        tab = self.tabs.widget(index)
+        if tab is None:
+            return
+        menu = QMenu(self)
+        action = menu.addAction("탭 잠금 해제" if tab.locked else "탭 잠금")
+        action.triggered.connect(lambda: self.toggle_tab_lock(index))
+        menu.exec(bar.mapToGlobal(pos))
 
     def choose_new_tab(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "새 탭에 열 폴더 선택", self.current_path())
@@ -1110,6 +1151,7 @@ class FilePanel(QWidget):
                 path = ts.get("path", "")
                 self.new_tab(path if path and Path(path).is_dir() else None)
                 self.tabs.widget(self.tabs.count() - 1).restore_state(ts)
+            self._refresh_tab_title(self.tabs.widget(i))
         active = int(state.get("active", 0))
         if 0 <= active < self.tabs.count():
             self.tabs.setCurrentIndex(active)
@@ -1119,11 +1161,24 @@ class FilePanel(QWidget):
             return  # keep at least one tab
         index = self.tabs.currentIndex() if index is None else index
         tab = self.tabs.widget(index)
+        if tab is None or tab.locked:
+            return
+        self._remove_tab(index)
+
+    def _remove_tab(self, index: int) -> None:
+        tab = self.tabs.widget(index)
         tab._stop_size_worker()
         if tab.remote is not None:
             tab.remote.close()
         tab.deleteLater()
         self.tabs.removeTab(index)
+
+    def replace_state(self, state: dict) -> None:
+        """Replace the panel's tabs explicitly, including tabs protected from ordinary closure."""
+        self.new_tab()
+        while self.tabs.count() > 1:
+            self._remove_tab(0)
+        self.restore_state(state)
 
     def set_path(self, path: str, target_cursor: str | None = None) -> None:
         self._tab.set_path(path, target_cursor=target_cursor)
