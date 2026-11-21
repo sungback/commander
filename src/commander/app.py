@@ -897,7 +897,7 @@ class MainWindow(QMainWindow):
                         return
                     job_title = f"복제: {len(srcs)}개 항목 → {dst}"
             else:
-                duplicate = False
+                duplicate = any(self._same_dir(s.parent, dst) for s in srcs)
                 if not self._ask("복사", f"{len(srcs)}개 항목을 다음 위치로 복사할까요?\n{dst}"):
                     return
                 job_title = f"복사: {len(srcs)}개 항목 → {dst}"
@@ -1023,12 +1023,39 @@ class MainWindow(QMainWindow):
         root = Path(panel.current_path())
         dlg = SearchDialog(root, pattern, self, text=text)
         dlg.exec()
-        if dlg.feed_to_panel:
+        if dlg.action:
+            paths = self._search_operation_paths(dlg.selected_paths)
+            if dlg.action == "trash":
+                self._delete_paths(paths)
+            else:
+                dst = self._local_destination()
+                if dst is not None:
+                    if dlg.action == "move" and any(self._same_dir(p.parent, dst) for p in paths):
+                        self._error(ValueError("대상 폴더에 이미 있는 항목은 이동할 수 없습니다"))
+                        return
+                    self._transfer_local(paths, dst, move=dlg.action == "move")
+        elif dlg.feed_to_panel:
             panel.show_search_results(dlg.found_paths, pattern=pattern, root=root)
             self._sync_view_actions()
         elif dlg.chosen is not None:
             target = dlg.chosen if dlg.chosen.is_dir() else dlg.chosen.parent
             panel.set_path(str(target))
+
+    @staticmethod
+    def _search_operation_paths(paths: list[Path]) -> list[Path]:
+        """Avoid operating twice on entries included in a selected real directory."""
+        unique = {os.path.normcase(os.path.abspath(p)): Path(p) for p in paths}
+        directories = {key for key, path in unique.items() if path.is_dir() and not path.is_symlink()}
+        result = []
+        for key, path in unique.items():
+            parent = os.path.dirname(key)
+            while parent != key:
+                if parent in directories:
+                    break
+                key, parent = parent, os.path.dirname(parent)
+            else:
+                result.append(path)
+        return result
 
     def _local_selection(self) -> tuple[FilePanel, list[Path]] | None:
         """Active panel and its selected local paths; reports an error outside local mode."""
@@ -1285,6 +1312,9 @@ class MainWindow(QMainWindow):
             self._error(ValueError("압축 파일과 원격 폴더는 읽기 전용입니다"))
             return
         paths = panel.selected_paths()
+        self._delete_paths(paths, permanent)
+
+    def _delete_paths(self, paths: list[Path], permanent: bool = False) -> None:
         if not paths:
             return
         if permanent:

@@ -1,6 +1,13 @@
 from pathlib import Path
 
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QListWidget, QPushButton, QVBoxLayout
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QDialog,
+    QHBoxLayout,
+    QListWidget,
+    QPushButton,
+    QVBoxLayout,
+)
 
 from .workers import SearchWorker
 
@@ -20,12 +27,15 @@ class SearchDialog(QDialog):
         self.chosen: Path | None = None
         self.feed_to_panel: bool = False
         self.found_paths: list[Path] = []
+        self.action: str | None = None
+        self.selected_paths: list[Path] = []
 
         what = f"{pattern} ('{text}' 포함)" if text else pattern
         self.setWindowTitle(f"검색: {what} — {root}")
         self.resize(700, 450)
 
         self.results = QListWidget()
+        self.results.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.results.itemActivated.connect(self._choose)
         self.results.itemSelectionChanged.connect(self._update_btn_states)
 
@@ -37,6 +47,15 @@ class SearchDialog(QDialog):
         self.goto_btn.setEnabled(False)
         self.goto_btn.clicked.connect(self._goto_selected)
 
+        self.copy_btn = QPushButton("복사")
+        self.copy_btn.clicked.connect(lambda: self._operate("copy"))
+        self.move_btn = QPushButton("이동")
+        self.move_btn.clicked.connect(lambda: self._operate("move"))
+        self.trash_btn = QPushButton("휴지통")
+        self.trash_btn.clicked.connect(lambda: self._operate("trash"))
+        for button in (self.copy_btn, self.move_btn, self.trash_btn):
+            button.setEnabled(False)
+
         self.stop = QPushButton("중지")
         self.stop.clicked.connect(self._stop)
 
@@ -46,6 +65,9 @@ class SearchDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addWidget(self.feed_btn)
         btn_layout.addWidget(self.goto_btn)
+        btn_layout.addWidget(self.copy_btn)
+        btn_layout.addWidget(self.move_btn)
+        btn_layout.addWidget(self.trash_btn)
         btn_layout.addStretch()
         btn_layout.addWidget(self.stop)
         btn_layout.addWidget(self.close_btn)
@@ -64,8 +86,10 @@ class SearchDialog(QDialog):
         self.feed_btn.setEnabled(True)
 
     def _update_btn_states(self) -> None:
-        has_sel = self.results.currentItem() is not None
-        self.goto_btn.setEnabled(has_sel)
+        count = len(self.results.selectedItems())
+        self.goto_btn.setEnabled(count == 1)
+        for button in (self.copy_btn, self.move_btn, self.trash_btn):
+            button.setEnabled(count > 0)
 
     def _stop(self) -> None:
         self.worker.cancel()
@@ -81,9 +105,17 @@ class SearchDialog(QDialog):
         self.accept()
 
     def _goto_selected(self) -> None:
-        item = self.results.currentItem()
-        if item:
-            self._choose(item)
+        items = self.results.selectedItems()
+        if len(items) == 1:
+            self._choose(items[0])
+
+    def _operate(self, action: str) -> None:
+        selected = self.results.selectedItems()
+        if not selected:
+            return
+        self.action = action
+        self.selected_paths = [Path(item.text()) for item in selected]
+        self.accept()
 
     def _feed(self) -> None:
         self.worker.cancel()
