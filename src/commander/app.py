@@ -44,6 +44,7 @@ from . import (
     checksum,
     compare,
     descriptions,
+    duplicates,
     file_actions,
     file_encoding,
     file_parts,
@@ -60,6 +61,7 @@ from . import (
 from .commands import default_commands, effective_shortcuts
 from .dialogs import TextDialog
 from .diff_dialog import DiffDialog
+from .duplicates_dialog import DuplicatesDialog
 from .panel import FilePanel
 from .preview_widget import PreviewWidget
 from .properties_dialog import ChangeAttributesDialog, PropertiesDialog
@@ -183,6 +185,7 @@ class MainWindow(QMainWindow):
             "close_tab": lambda: self.panels[self.active_index()].close_tab(),
             "command_line": self.focus_command_line, "connect": self.connect_ftp,
             "compare_dirs": self.compare_dirs, "sync": self.sync_dirs, "diff": self.diff_files,
+            "duplicates": self.find_duplicates,
             "checksum": self.checksum, "verify": self.verify_checksum, "settings": self.open_settings,
         }
         self.actions_by_name: dict[str, QAction] = {}
@@ -1217,6 +1220,24 @@ class MainWindow(QMainWindow):
 
         self.start_job("압축 검사", lambda job: archive.test_integrity(
             path, stats=job.stats, control=job.control), on_done=done, reads=[path], writes=[])
+
+    def find_duplicates(self) -> None:
+        panel = self.panels[self.active_index()]
+        if panel.in_remote or panel.in_archive:
+            self._error(ValueError("중복 파일 검색은 로컬 폴더에서만 사용할 수 있습니다"))
+            return
+        dialog = DuplicatesDialog(Path(panel.current_path()), self)
+        if not dialog.exec() or not dialog.selected_paths or dialog.result_data is None:
+            return
+        selected = dialog.selected_paths
+        result = dialog.result_data
+        if not self._ask("중복 파일 정리", f"선택한 {len(selected)}개 파일을 휴지통으로 옮길까요?\n"
+                         "실행 직전에 파일을 다시 확인합니다."):
+            return
+        reads = [path for group in result.groups for path in group]
+        self.start_job("중복 파일 정리", lambda job: duplicates.trash_duplicates(
+            result, selected, control=job.control, on_error=job.on_error, progress=job.on_item),
+            total_items=len(selected), reads=reads, writes=selected)
 
     def checksum(self) -> None:
         """Compute checksums of the selected files (folders are included recursively)."""

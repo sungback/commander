@@ -57,6 +57,7 @@ def default_commands(platform: str = sys.platform) -> list[Command]:
         c("compare_dirs", "폴더 비교 (다른 항목 선택)", "도구", ("Shift+F2",)),
         c("sync", "폴더 동기화...", "도구", ("Ctrl+Shift+S",)),
         c("diff", "파일 내용 비교", "도구", ("Ctrl+Shift+D",)),
+        c("duplicates", "중복 파일 찾기...", "도구"),
         c("checksum", "체크섬 계산...", "도구"),
         c("verify", "체크섬 검증", "도구"),
         c("settings", "설정...", "도구", ("Ctrl+,",)),
