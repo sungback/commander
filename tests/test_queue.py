@@ -55,8 +55,10 @@ def test_queue_row_progress_pause_resume(tmp_path, monkeypatch):
 
 def test_jobs_run_concurrently_and_cancel_independently(tmp_path, monkeypatch):
     win, _a, _b = _win(tmp_path, monkeypatch)
+    win.queue.set_max_concurrent(2)
     gates = [threading.Event(), threading.Event()]
-    jobs = [win.start_job(f"job {i}", _gated(g), total_items=2) for i, g in enumerate(gates)]
+    jobs = [win.start_job(f"job {i}", _gated(g), total_items=2, reads=(), writes=())
+            for i, g in enumerate(gates)]
     _wait(lambda: all(j.stats.done_items == 1 for j in jobs))  # both are running at once
     assert len(win.queue.rows()) == 2
 
@@ -91,12 +93,14 @@ def test_close_asks_before_cancelling_running_jobs(tmp_path, monkeypatch):
     win, _a, _b = _win(tmp_path, monkeypatch)
     gate = threading.Event()
     job = win.start_job("long", _gated(gate), total_items=2)
+    pending = win.start_job("pending", _gated(gate), total_items=2)
     _wait(lambda: job.stats.done_items == 1)
     monkeypatch.setattr(QMessageBox, "question", lambda *_: QMessageBox.No)
     assert win.close() is False and job.isRunning() and not job.cancelled
     monkeypatch.setattr(QMessageBox, "question", lambda *_: QMessageBox.Yes)
     assert win.close() is True
     assert job.cancelled and job.isFinished()
+    assert pending.cancelled and not pending.isRunning()
     QApplication.processEvents()
 
 

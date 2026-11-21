@@ -89,6 +89,10 @@ class Job(QThread):
         self.control.cancel()
         self._answered.set()
 
+    def discard_pending(self) -> None:
+        """Release a job that was cancelled before its thread was started."""
+        _size_workers.discard(self)
+
     def on_item(self, path: Path) -> None:
         self.stats.done_items += 1
         self.stats.current = Path(path).name

@@ -87,6 +87,8 @@ class MainWindow(QMainWindow):
         self.resize(1100, 650)
         self._worker: Worker | None = None  # modal task (remote transfers)
         self.jobs: list[Job] = []  # non-modal background jobs shown in the queue panel
+        self._job_callbacks = {}
+        self._job_generation = 0
         self._conflicts: list[tuple[Job, str, str]] = []
         self._asking = False
         self._update_worker: UpdateCheckWorker | UpdateDownloadWorker | None = None
@@ -131,6 +133,7 @@ class MainWindow(QMainWindow):
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(2)
         self.queue = QueuePanel()
+        self.queue.cancelled_pending.connect(self._pending_job_cancelled)
         self.quick = PreviewWidget()  # Quick View: takes the inactive panel's place while on
         self.quick.hide()
         self._quick_side: int | None = None
@@ -378,23 +381,31 @@ class MainWindow(QMainWindow):
     def busy(self) -> bool:
         return bool(self.jobs) or self._worker is not None
 
-    def start_job(self, title: str, run_fn, total_items: int = 0, on_done=None) -> Job:
+    def start_job(self, title: str, run_fn, total_items: int = 0, on_done=None,
+                  reads=None, writes=None) -> Job:
         """Run `run_fn(job)` in the background; it appears in the queue panel until it ends.
 
         `on_done(job)` runs on the UI thread afterwards unless the job was cancelled.
         """
         job = Job(title, run_fn, total_items, self)
+        self._job_generation += 1
+        job.reads = None if reads is None else tuple(reads)
+        job.writes = None if writes is None else tuple(writes)
+        self._job_callbacks[job] = on_done
         job.conflict.connect(self._on_job_conflict)
         job.finished.connect(lambda: self._job_finished(job, on_done))
         self.jobs.append(job)
         self.queue.add(job)
-        job.start()
         return job
+
+    def _pending_job_cancelled(self, job: Job) -> None:
+        self._job_finished(job, self._job_callbacks.get(job))
 
     def _job_finished(self, job: Job, on_done=None) -> None:
         if job not in self.jobs:
             return
         self.jobs.remove(job)
+        self._job_callbacks.pop(job, None)
         self.queue.remove(job)
         self._conflicts = [c for c in self._conflicts if c[0] is not job]
         errors = job.errors
@@ -429,8 +440,7 @@ class MainWindow(QMainWindow):
                                      "모두 취소하고 종료할까요?"):
                 event.ignore()
                 return
-            for job in list(self.jobs):
-                job.cancel()
+            self.queue.cancel_all()
             for job in list(self.jobs):
                 job.wait(5000)
         self.save_state()
@@ -636,7 +646,8 @@ class MainWindow(QMainWindow):
         if dialog.exec():
             values = dialog.values()
             self.start_job("속성 변경", lambda job: properties.change_attributes(
-                sel[1], **values, control=job.control, on_error=job.on_error))
+                sel[1], **values, control=job.control, on_error=job.on_error),
+                reads=[], writes=sel[1])
 
     def disk_usage(self) -> None:
         sel = self._local_selection()
@@ -652,7 +663,8 @@ class MainWindow(QMainWindow):
                     f"파일: {result.files:,}개, 폴더: {result.directories:,}개")
 
         self.start_job("점유 공간 계산", lambda job: properties.calculate_sizes(
-            sel[1], control=job.control, on_error=job.on_error), on_done=done)
+            sel[1], control=job.control, on_error=job.on_error), on_done=done,
+            reads=sel[1], writes=[])
 
     def _local_destination(self) -> Path | None:
         other = self.panels[1 - self.active_index()]
@@ -671,7 +683,8 @@ class MainWindow(QMainWindow):
         size, ok = QInputDialog.getInt(self, "파일 분할", "조각 크기 (MiB):", 100, 1, 1048576)
         if ok and self._ask("파일 분할", f"{path.name}을(를) {dst}에 분할할까요?\n기존 파일은 덮어쓰지 않습니다."):
             self.start_job("파일 분할", lambda job: file_parts.split_file(
-                path, dst, size * 1024 * 1024, stats=job.stats, control=job.control))
+                path, dst, size * 1024 * 1024, stats=job.stats, control=job.control),
+                reads=[path], writes=[dst])
 
     def join_files(self) -> None:
         path = self._single_file()
@@ -680,7 +693,7 @@ class MainWindow(QMainWindow):
         dst = self._local_destination()
         if dst and self._ask("파일 결합", f"선택한 분할 목록으로 {dst}에 결합할까요?\n기존 파일은 덮어쓰지 않습니다."):
             self.start_job("파일 결합", lambda job: file_parts.join_file(
-                path, dst, stats=job.stats, control=job.control))
+                path, dst, stats=job.stats, control=job.control), reads=[path.parent], writes=[dst])
 
     def edit_description(self) -> None:
         path = self._single_file()
@@ -711,7 +724,8 @@ class MainWindow(QMainWindow):
             return
         self.start_job("파일 디코드" if decode else "파일 인코드",
             lambda job: file_encoding.convert(path, dst / name, decode=decode,
-                                            stats=job.stats, control=job.control))
+                                            stats=job.stats, control=job.control),
+            reads=[path], writes=[dst / name])
 
     def copy_path(self) -> None:
         labels = self.panels[self.active_index()].selection_labels()
@@ -838,7 +852,7 @@ class MainWindow(QMainWindow):
             self.start_job(
                 f"추출: {len(srcs)}개 항목 → {dst}",
                 lambda job: archive.extract(arc, srcs, dst, overwrite=overwrite, progress=job.on_item),
-                total_items=len(srcs))
+                total_items=len(srcs), reads=[arc], writes=[dst])
             return
         # Remote transfers stay modal: an FTP/SFTP connection cannot be shared with browsing.
         self._run_task(verb, len(srcs),
@@ -892,7 +906,8 @@ class MainWindow(QMainWindow):
             job_title,
             lambda job: transfer.transfer(srcs, dst, move=move, duplicate=duplicate,
                                           on_conflict=job.ask, on_error=job.on_error,
-                                          stats=job.stats, control=job.control))
+                                          stats=job.stats, control=job.control),
+            reads=srcs, writes=[dst, *srcs] if move else [dst])
 
     def _resolve_conflicts(self, names: list[str], allow_rename: bool) -> dict[str, str] | None:
         """Ask what to do with each already-existing name; None means the user cancelled."""
@@ -1052,9 +1067,13 @@ class MainWindow(QMainWindow):
 
     def sync_dirs(self) -> None:
         """Compare both panels' folders recursively, review, then synchronize as a background job."""
+        if self.jobs:
+            QMessageBox.information(self, "폴더 동기화", "작업 큐가 비워진 후 동기화를 시작하세요.")
+            return
         if self._both_local() is None:
             return
         left, right = (Path(p.current_path()) for p in self.panels)
+        generation = self._job_generation
         try:
             sync.check_roots(left, right)
         except (OSError, ValueError) as e:
@@ -1063,10 +1082,14 @@ class MainWindow(QMainWindow):
         dlg = SyncDialog(left, right, self.panels[self.active_index()].show_hidden, self)
         if dlg.exec() != SyncDialog.Accepted or not dlg.plan:
             return
+        if self.jobs or self._job_generation != generation:
+            QMessageBox.information(self, "폴더 동기화", "작업 큐가 변경되었습니다. 다시 비교하세요.")
+            return
         plan = dlg.plan
         self.start_job(
             f"동기화: {left.name} ↔ {right.name} ({len(plan)}개 항목)",
-            lambda job: sync.apply(plan, left, right, job.stats, job.control, job.on_error))
+            lambda job: sync.apply(plan, left, right, job.stats, job.control, job.on_error),
+            reads=[], writes=[left, right])
 
     def diff_files(self) -> None:
         """Compare two files: both selected in the active panel, or one against the other panel."""
@@ -1130,7 +1153,8 @@ class MainWindow(QMainWindow):
         self.start_job(
             f"압축: {len(paths)}개 항목 → {dst.name}",
             lambda job: archive.create(dst, paths, overwrite=overwrite, stats=job.stats,
-                                       control=job.control, on_error=job.on_error))
+                                       control=job.control, on_error=job.on_error),
+            reads=paths, writes=[dst])
 
     def unpack(self) -> None:
         path = self._single_file()
@@ -1145,7 +1169,7 @@ class MainWindow(QMainWindow):
         if self._ask("압축 해제", f"{path.name}을(를) 다음 폴더에 추출할까요?\n{dst}"):
             self.start_job("압축 해제", lambda job: archive.extract_all(
                 path, dst, on_conflict=job.ask, on_error=job.on_error,
-                stats=job.stats, control=job.control))
+                stats=job.stats, control=job.control), reads=[path], writes=[dst])
 
     def test_archive(self) -> None:
         path = self._single_file()
@@ -1165,7 +1189,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "압축 검사", "압축 파일 검사에 성공했습니다.")
 
         self.start_job("압축 검사", lambda job: archive.test_integrity(
-            path, stats=job.stats, control=job.control), on_done=done)
+            path, stats=job.stats, control=job.control), on_done=done, reads=[path], writes=[])
 
     def checksum(self) -> None:
         """Compute checksums of the selected files (folders are included recursively)."""
@@ -1190,7 +1214,7 @@ class MainWindow(QMainWindow):
         self.start_job(
             f"{label} 계산: {len(paths)}개 항목",
             lambda job: checksum.hash_files(paths, base, algo, job.stats, job.control, job.on_error),
-            on_done=done)
+            on_done=done, reads=paths, writes=[])
 
     def verify_checksum(self) -> None:
         """Verify the files listed in the selected .sha256 / .sha1 / .md5 file."""
@@ -1212,7 +1236,8 @@ class MainWindow(QMainWindow):
             TextDialog(f"검증 - {sums[0].name}", body, self, summary=summary).exec()
 
         self.start_job(f"검증: {sums[0].name}",
-                       lambda job: checksum.verify(sums[0], job.stats, job.control), on_done=done)
+                       lambda job: checksum.verify(sums[0], job.stats, job.control), on_done=done,
+                       reads=[sums[0].parent], writes=[])
 
     def batch_rename(self) -> None:
         panel = self.panels[self.active_index()]
@@ -1272,7 +1297,7 @@ class MainWindow(QMainWindow):
         verb = "영구 삭제" if permanent else "휴지통으로 이동"
         self.start_job(f"{verb}: {len(paths)}개 항목",
                        lambda job: fn(paths, progress=job.on_item, on_error=job.on_error),
-                       total_items=len(paths))
+                       total_items=len(paths), reads=[], writes=paths)
 
     def show_about(self) -> None:
         QMessageBox.information(self, "정보", f"commander v{__version__}")
