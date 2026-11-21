@@ -1,4 +1,6 @@
 
+from types import SimpleNamespace
+
 import pytest
 
 from commander import duplicates
@@ -16,12 +18,53 @@ def test_groups_identical_files_including_empty_and_skips_symlinks(tmp_path):
         (tmp_path / "link").symlink_to(tmp_path / "a")
     except OSError:
         pass
-    result = duplicates.find_duplicates(tmp_path)
+    errors = []
+    result = duplicates.find_duplicates(tmp_path, on_error=lambda p, e: errors.append((p, str(e))))
+    assert not errors, errors
     assert {frozenset(group) for group in result.groups} == {
         frozenset((tmp_path / "a", tmp_path / "sub/b")),
         frozenset((tmp_path / "empty1", tmp_path / "empty2")),
     }
     assert set(result.snapshots) == {p for group in result.groups for p in group}
+
+
+def test_windows_path_and_handle_ctime_use_different_conventions(tmp_path, monkeypatch):
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.write_bytes(b"same")
+    b.write_bytes(b"same")
+    original_fstat = duplicates.os.fstat
+
+    def descriptor_with_change_time(fd):
+        st = original_fstat(fd)
+        return SimpleNamespace(st_mode=st.st_mode, st_dev=st.st_dev, st_ino=st.st_ino,
+                               st_size=st.st_size, st_mtime_ns=st.st_mtime_ns,
+                               st_ctime_ns=st.st_ctime_ns + 1000)
+
+    monkeypatch.setattr(duplicates, "_WINDOWS", True)
+    monkeypatch.setattr(duplicates.os, "fstat", descriptor_with_change_time)
+    result = duplicates.find_duplicates(tmp_path)
+    assert result.groups == [[a, b]]
+
+
+def test_windows_still_rejects_handle_change_during_hash(tmp_path, monkeypatch):
+    path = tmp_path / "a"
+    path.write_bytes(b"same")
+    signature = duplicates._signature(path.stat(follow_symlinks=False))
+    original_fstat = duplicates.os.fstat
+    calls = 0
+
+    def changed_descriptor(fd):
+        nonlocal calls
+        calls += 1
+        st = original_fstat(fd)
+        return SimpleNamespace(st_mode=st.st_mode, st_dev=st.st_dev, st_ino=st.st_ino,
+                               st_size=st.st_size, st_mtime_ns=st.st_mtime_ns,
+                               st_ctime_ns=st.st_ctime_ns + 1000 + calls)
+
+    monkeypatch.setattr(duplicates, "_WINDOWS", True)
+    monkeypatch.setattr(duplicates.os, "fstat", changed_descriptor)
+    with pytest.raises(OSError, match="changed"):
+        duplicates._digest(path, signature, lambda: False)
 
 
 def test_cancel_never_returns_partial_results(tmp_path):

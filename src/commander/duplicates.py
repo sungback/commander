@@ -12,6 +12,7 @@ from . import ops
 from .transfer import Control
 
 Signature = tuple[int, int, int, int, int]
+_WINDOWS = os.name == "nt"
 
 
 @dataclass
@@ -37,6 +38,13 @@ def _changed(path: Path) -> OSError:
     return OSError(f"file changed while scanning: {path}")
 
 
+def _matches_opened(path_sig: Signature, opened_sig: Signature) -> bool:
+    # CPython on Windows may report creation time in stat().st_ctime_ns but
+    # change time in fstat().st_ctime_ns (cpython#157671). Both sources are
+    # compared against themselves before and after the read below.
+    return path_sig[:4] == opened_sig[:4] if _WINDOWS else path_sig == opened_sig
+
+
 def _digest(path: Path, expected: Signature,
             cancelled: Callable[[], bool]) -> bytes:
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
@@ -47,7 +55,8 @@ def _digest(path: Path, expected: Signature,
     fd = os.open(path, flags)
     with os.fdopen(fd, "rb") as stream:
         opened = os.fstat(stream.fileno())
-        if not stat.S_ISREG(opened.st_mode) or _signature(opened) != expected:
+        opened_signature = _signature(opened)
+        if not stat.S_ISREG(opened.st_mode) or not _matches_opened(expected, opened_signature):
             raise _changed(path)
         digest = hashlib.sha256()
         while True:
@@ -56,7 +65,7 @@ def _digest(path: Path, expected: Signature,
             if not chunk:
                 break
             digest.update(chunk)
-        if _signature(os.fstat(stream.fileno())) != expected:
+        if _signature(os.fstat(stream.fileno())) != opened_signature:
             raise _changed(path)
     after = path.stat(follow_symlinks=False)
     if not stat.S_ISREG(after.st_mode) or _signature(after) != expected:
